@@ -70,9 +70,22 @@ ul{list-style:none;padding:0}
 .comp{display:flex;gap:8px;padding:0 16px 16px}
 .comp input{background:var(--input);padding:12px}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--dark);border:1px solid #3f4147;padding:10px 16px;border-radius:6px;z-index:10;max-width:90vw}
+#rail{width:68px;flex:none;background:var(--dark);display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 0;overflow-y:auto}
+#srvList{display:flex;flex-direction:column;gap:8px}
+.rb{width:46px;height:46px;border-radius:50%;padding:0;font-size:17px;background:var(--side);color:var(--text);display:grid;place-items:center}
+.rb:hover,.rb.on{border-radius:14px;background:var(--accent);color:#fff}
+.rb.add{color:var(--green);font-size:24px}
+.rb.add:hover{background:var(--green);color:#fff}
+.srvhead{display:flex;align-items:center;gap:4px;padding:8px}
+.srvhead b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+dialog{background:var(--bg);color:var(--text);border:0;border-radius:8px;padding:24px;width:min(380px,92vw);margin:auto}
+dialog::backdrop{background:rgba(0,0,0,.7)}
+dialog form{display:flex;flex-direction:column;gap:10px}
+dialog h2{font-size:18px}
+dialog p{color:var(--muted);font-size:14px}
 @media(max-width:700px){
-  #side{width:100%}
-  #app.chat-open #side{display:none}
+  #side{flex:1;width:auto}
+  #app.chat-open #side,#app.chat-open #rail{display:none}
   #app:not(.chat-open) #chat{display:none}
   #back{display:inline-block}
 }
@@ -101,13 +114,18 @@ ul{list-style:none;padding:0}
 </div>
 
 <div id="app" hidden>
+  <nav id="rail" aria-label="Servers">
+    <button class="rb on" id="homeBtn" title="Direct messages" aria-label="Direct messages">DM</button>
+    <div id="srvList"></div>
+    <button class="rb add" id="addSrv" title="Create or join a server" aria-label="Create or join a server">+</button>
+  </nav>
   <aside id="side">
     <div class="me">
       <div class="av" id="meAv"></div>
       <b id="meName"></b>
       <button class="ghost" id="logout">Log out</button>
     </div>
-    <div class="scroll">
+    <div class="scroll" id="dmScroll">
       <h3>Find friends</h3>
       <input id="search" placeholder="Search by username" autocomplete="off" autocapitalize="none" spellcheck="false">
       <ul id="results"></ul>
@@ -120,6 +138,17 @@ ul{list-style:none;padding:0}
       <h3>Friends</h3>
       <ul id="friends"></ul>
       <p class="empty" id="noFriends" hidden>No friends yet. Search for a username above to send a request.</p>
+    </div>
+    <div class="scroll" id="srvScroll" hidden>
+      <div class="srvhead">
+        <b id="srvName"></b>
+        <button class="ghost sm" id="invite">Invite</button>
+        <button class="ghost sm" id="leaveSrv">Leave</button>
+      </div>
+      <h3>Channels <button class="ghost sm" id="addCh" hidden>Add</button></h3>
+      <ul id="channels"></ul>
+      <h3>Members</h3>
+      <ul id="members"></ul>
     </div>
   </aside>
 
@@ -141,6 +170,22 @@ ul{list-style:none;padding:0}
   </main>
 </div>
 
+<dialog id="dlg">
+  <form id="createForm">
+    <h2>Create a server</h2>
+    <input id="srvNameIn" placeholder="Server name" maxlength="30" required>
+    <button type="submit">Create server</button>
+  </form>
+  <hr style="border:0;border-top:1px solid #3f4147;margin:16px 0">
+  <form id="joinForm">
+    <h2>Join a server</h2>
+    <p>Paste the invite code a friend shared with you.</p>
+    <input id="codeIn" placeholder="Invite code" maxlength="16" required autocapitalize="none" spellcheck="false">
+    <button type="submit">Join server</button>
+  </form>
+  <button class="ghost" id="dlgClose" style="margin-top:10px">Cancel</button>
+</dialog>
+
 <div id="toast" hidden role="status"></div>
 
 <script src="/socket.io/socket.io.js"></script>
@@ -151,6 +196,7 @@ const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls)
 let token = localStorage.getItem('token');
 let me = null, socket = null, active = null, mode = 'login';
 let friends = new Map(), requests = [], typingFrom = {}, typingTimers = {};
+let servers = new Map(), curServer = null, activeChannel = null;
 let lastMsg = null, iAmTyping = false, typingOff = null, toastTimer = null, searchTimer = null;
 
 // ---------- helpers ----------
@@ -215,6 +261,8 @@ function showAuth() { $('#app').hidden = true; $('#auth').hidden = false; }
 function logout() {
   localStorage.removeItem('token');
   token = null; me = null; active = null; friends = new Map(); requests = []; typingFrom = {};
+  servers = new Map(); curServer = null; activeChannel = null;
+  $('#dmScroll').hidden = false; $('#srvScroll').hidden = true; $('#srvList').textContent = '';
   if (socket) { socket.disconnect(); socket = null; }
   $('#app').classList.remove('chat-open');
   $('#pane').hidden = true; $('#hero').hidden = false;
@@ -248,7 +296,7 @@ function connectSocket() {
   if (socket) socket.disconnect();
   socket = io({ auth: { token } });
   socket.on('connect_error', (e) => { if (e.message === 'auth') logout(); });
-  socket.on('connect', () => loadLists().catch((e) => toast(e.message)));
+  socket.on('connect', () => { loadLists().catch((e) => toast(e.message)); loadServers().catch((e) => toast(e.message)); });
 
   socket.on('request:incoming', (r) => {
     if (!requests.some((x) => x.id === r.id)) requests.push(r);
@@ -263,9 +311,29 @@ function connectSocket() {
     if ($('#search').value.trim()) runSearch();
   });
   socket.on('presence', ({ userId, online }) => {
+    const sm = curServer && curServer.members.get(userId);
+    if (sm) { sm.online = online; renderMembers(); }
     const f = friends.get(userId); if (!f) return;
     f.online = online; renderFriends();
     if (active === userId) updateHeader();
+  });
+  socket.on('server:added', ({ server }) => { servers.set(server.id, server); renderRail(); });
+  socket.on('server:removed', ({ serverId, deleted }) => {
+    const s = servers.get(serverId); servers.delete(serverId);
+    if (curServer && curServer.id === serverId) { showHome(); if (deleted) toast((s ? s.name : 'The server') + ' was deleted.'); }
+    renderRail();
+  });
+  socket.on('channel:added', ({ serverId, channel }) => {
+    if (curServer && curServer.id === serverId && !curServer.channels.some((c) => c.id === channel.id)) {
+      curServer.channels.push({ ...channel, unread: 0 }); renderChannels();
+    }
+  });
+  socket.on('member:joined', ({ serverId, member }) => { if (curServer && curServer.id === serverId) { curServer.members.set(member.id, member); renderMembers(); } });
+  socket.on('member:left', ({ serverId, userId }) => { if (curServer && curServer.id === serverId) { curServer.members.delete(userId); renderMembers(); } });
+  socket.on('channel:message', (m) => {
+    if (!curServer || curServer.id !== m.serverId) return;
+    if (activeChannel === m.channel_id) addMsg(m, true);
+    else if (m.sender_id !== me.id) { const c = curServer.channels.find((x) => x.id === m.channel_id); if (c) { c.unread++; renderChannels(); } }
   });
   socket.on('typing', ({ from, isTyping }) => {
     clearTimeout(typingTimers[from]);
@@ -375,7 +443,7 @@ function openChat(id) {
 }
 
 $('#back').onclick = () => {
-  stopTyping(); active = null;
+  stopTyping(); active = null; activeChannel = null; if (curServer) renderChannels();
   $('#app').classList.remove('chat-open');
   $('#pane').hidden = true; $('#hero').hidden = false;
   renderFriends();
@@ -396,7 +464,7 @@ function addMsg(m, scroll) {
   const box = $('#msgs');
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 150;
   const mine = m.sender_id === me.id;
-  const name = mine ? me.username : friends.get(active).username;
+  const name = mine ? me.username : (m.username || friends.get(active).username);
   const t = new Date(m.created_at);
   const grouped = lastMsg && lastMsg.s === m.sender_id && t - lastMsg.t < 300000;
   const row = el('div', 'msg' + (grouped ? ' grouped' : ''));
@@ -423,12 +491,135 @@ $('#text').addEventListener('input', () => {
 $('#composer').addEventListener('submit', (e) => {
   e.preventDefault();
   const input = $('#text'), content = input.value.trim();
-  if (!content || !active) return;
-  socket.emit('message:send', { to: active, content }, (res) => {
+  if (!content || (!active && !activeChannel)) return;
+  const ev = activeChannel ? 'channel:message' : 'message:send';
+  const payload = activeChannel ? { channelId: activeChannel, content } : { to: active, content };
+  socket.emit(ev, payload, (res) => {
     if (res && res.error) { toast(res.error); input.value = content; }
   });
   input.value = ''; stopTyping();
 });
+
+// ---------- servers ----------
+async function loadServers() {
+  servers = new Map((await api('/api/servers')).servers.map((s) => [s.id, s]));
+  renderRail();
+  if (curServer) {
+    if (!servers.has(curServer.id)) showHome();
+    else if (activeChannel) loadChannelHistory();
+  }
+}
+
+function renderRail() {
+  $('#homeBtn').classList.toggle('on', !curServer);
+  const list = $('#srvList'); list.textContent = '';
+  for (const s of servers.values()) {
+    const b = el('button', 'rb' + (curServer && curServer.id === s.id ? ' on' : ''), s.name.charAt(0).toUpperCase());
+    b.title = s.name; b.setAttribute('aria-label', s.name);
+    b.onclick = () => selectServer(s.id).catch((err) => toast(err.message));
+    list.append(b);
+  }
+}
+
+function showHome() {
+  stopTyping();
+  curServer = null; activeChannel = null; active = null;
+  $('#dmScroll').hidden = false; $('#srvScroll').hidden = true;
+  $('#app').classList.remove('chat-open');
+  $('#pane').hidden = true; $('#hero').hidden = false;
+  renderRail(); renderFriends();
+}
+
+async function selectServer(id) {
+  if (!servers.has(id)) await loadServers();
+  const d = await api('/api/servers/' + id);
+  stopTyping(); active = null; activeChannel = null;
+  curServer = { ...servers.get(id), channels: d.channels.map((c) => ({ ...c, unread: 0 })), members: new Map(d.members.map((m) => [m.id, m])) };
+  $('#dmScroll').hidden = true; $('#srvScroll').hidden = false;
+  $('#pane').hidden = true; $('#hero').hidden = false;
+  $('#app').classList.remove('chat-open');
+  $('#srvName').textContent = curServer.name;
+  const owner = curServer.owner_id === me.id;
+  $('#addCh').hidden = !owner;
+  $('#leaveSrv').textContent = owner ? 'Delete' : 'Leave';
+  renderRail(); renderChannels(); renderMembers();
+  if (window.innerWidth > 700 && curServer.channels[0]) openChannel(curServer.channels[0].id);
+}
+
+function renderChannels() {
+  if (!curServer) return;
+  const list = $('#channels'); list.textContent = '';
+  for (const c of curServer.channels) {
+    const li = el('li', 'row click' + (c.id === activeChannel ? ' sel' : ''));
+    li.tabIndex = 0;
+    li.append(el('span', 'hint', '#'), el('span', 'n', c.name));
+    if (c.unread) li.append(el('span', 'badge', String(c.unread)));
+    li.onclick = () => openChannel(c.id);
+    li.onkeydown = (e) => { if (e.key === 'Enter') openChannel(c.id); };
+    list.append(li);
+  }
+}
+
+function renderMembers() {
+  const list = $('#members'); list.textContent = '';
+  const sorted = [...curServer.members.values()].sort((a, b) => b.online - a.online || a.username.localeCompare(b.username));
+  for (const m of sorted) {
+    const li = el('li', 'row');
+    li.append(avatar(m.username, m.online), el('span', 'n', m.username + (m.id === curServer.owner_id ? ' (owner)' : '')));
+    list.append(li);
+  }
+}
+
+function openChannel(id) {
+  const c = curServer.channels.find((x) => x.id === id); if (!c) return;
+  stopTyping(); active = null; activeChannel = id; c.unread = 0; renderChannels();
+  $('#hero').hidden = true; $('#pane').hidden = false;
+  $('#app').classList.add('chat-open');
+  const av = el('div', 'av', '#'); av.id = 'chAv'; av.style.background = '#4e5058';
+  $('#chAv').replaceWith(av);
+  $('#chName').textContent = c.name;
+  $('#chStatus').textContent = curServer.name;
+  $('#typing').textContent = '';
+  loadChannelHistory().then(() => { if (window.innerWidth > 700) $('#text').focus(); });
+}
+
+async function loadChannelHistory() {
+  const id = activeChannel;
+  try {
+    const { messages } = await api('/api/channels/' + id + '/messages');
+    if (id !== activeChannel) return;
+    $('#msgs').textContent = ''; lastMsg = null;
+    messages.forEach((m) => addMsg(m, false));
+    $('#msgs').scrollTop = $('#msgs').scrollHeight;
+  } catch (err) { toast(err.message); }
+}
+
+$('#homeBtn').onclick = showHome;
+$('#addSrv').onclick = () => $('#dlg').showModal();
+$('#dlgClose').onclick = () => $('#dlg').close();
+function srvAction(ev, data, inputId) {
+  socket.emit(ev, data, (res) => {
+    if (res.error) return toast(res.error);
+    $(inputId).value = ''; $('#dlg').close();
+    selectServer(res.serverId).catch((err) => toast(err.message));
+  });
+}
+$('#createForm').addEventListener('submit', (e) => { e.preventDefault(); srvAction('server:create', { name: $('#srvNameIn').value }, '#srvNameIn'); });
+$('#joinForm').addEventListener('submit', (e) => { e.preventDefault(); srvAction('server:join', { code: $('#codeIn').value }, '#codeIn'); });
+$('#addCh').onclick = () => {
+  const name = prompt('New channel name'); if (!name) return;
+  socket.emit('channel:create', { serverId: curServer.id, name }, (res) => { if (res.error) toast(res.error); });
+};
+$('#invite').onclick = async () => {
+  const code = curServer.invite_code;
+  try { await navigator.clipboard.writeText(code); toast('Invite code ' + code + ' copied. Friends join with the + button.'); }
+  catch { toast('Invite code: ' + code); }
+};
+$('#leaveSrv').onclick = () => {
+  const owner = curServer.owner_id === me.id;
+  if (!confirm(owner ? 'Delete "' + curServer.name + '" for everyone? This cannot be undone.' : 'Leave "' + curServer.name + '"?')) return;
+  socket.emit('server:leave', { serverId: curServer.id }, (res) => { if (res.error) toast(res.error); });
+};
 
 start();
 </script>
