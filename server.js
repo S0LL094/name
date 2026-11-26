@@ -6,6 +6,7 @@ const { Server } = require('socket.io');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -48,6 +49,34 @@ async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS messages_pair_idx ON messages (sender_id, receiver_id, id);
+    CREATE TABLE IF NOT EXISTS servers (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(30) NOT NULL,
+      owner_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      invite_code VARCHAR(16) NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS server_members (
+      server_id INT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (server_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS channels (
+      id SERIAL PRIMARY KEY,
+      server_id INT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+      name VARCHAR(30) NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (server_id, name)
+    );
+    CREATE TABLE IF NOT EXISTS channel_messages (
+      id SERIAL PRIMARY KEY,
+      channel_id INT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+      sender_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS channel_messages_idx ON channel_messages (channel_id, id);
   `);
   console.log('Database ready.');
 }
@@ -160,18 +189,58 @@ app.get('/api/messages/:friendId', auth, wrap(async (req, res) => {
   res.json({ messages: rows });
 }));
 
+// ---------- Servers ----------
+const isMember = async (userId, serverId) =>
+  (await pool.query('SELECT 1 FROM server_members WHERE user_id=$1 AND server_id=$2', [userId, serverId])).rowCount > 0;
+
+app.get('/api/servers', auth, wrap(async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT s.id, s.name, s.owner_id, s.invite_code FROM servers s
+     JOIN server_members m ON m.server_id=s.id WHERE m.user_id=$1 ORDER BY s.created_at`, [req.user.id]);
+  res.json({ servers: rows });
+}));
+
+app.get('/api/servers/:id', auth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id || !(await isMember(req.user.id, id))) return res.status(403).json({ error: 'You are not in that server.' });
+  const [ch, mem] = await Promise.all([
+    pool.query('SELECT id, name FROM channels WHERE server_id=$1 ORDER BY id', [id]),
+    pool.query('SELECT u.id, u.username FROM server_members m JOIN users u ON u.id=m.user_id WHERE m.server_id=$1 ORDER BY u.username', [id]),
+  ]);
+  res.json({ channels: ch.rows, members: mem.rows.map((r) => ({ ...r, online: isOnline(r.id) })) });
+}));
+
+app.get('/api/channels/:id/messages', auth, wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  const c = id && (await pool.query('SELECT server_id FROM channels WHERE id=$1', [id])).rows[0];
+  if (!c || !(await isMember(req.user.id, c.server_id))) return res.status(403).json({ error: 'You cannot view this channel.' });
+  const { rows } = await pool.query(
+    `SELECT * FROM (
+       SELECT m.id, m.channel_id, m.sender_id, u.username, m.content, m.created_at
+       FROM channel_messages m JOIN users u ON u.id=m.sender_id WHERE m.channel_id=$1 ORDER BY m.id DESC LIMIT 200
+     ) t ORDER BY id ASC`, [id]);
+  res.json({ messages: rows });
+}));
+
 // ---------- Socket.IO ----------
-io.use((socket, next) => {
+io.use(async (socket, next) => {
   try {
     socket.user = jwt.verify(socket.handshake.auth && socket.handshake.auth.token, JWT_SECRET);
-    next();
   } catch {
-    next(new Error('auth'));
+    return next(new Error('auth'));
   }
+  try {
+    const { rows } = await pool.query('SELECT server_id FROM server_members WHERE user_id=$1', [socket.user.id]);
+    if (rows.length) socket.join(rows.map((r) => 's:' + r.server_id));
+  } catch (e) { console.error('join rooms', e); }
+  next();
 });
 
 async function broadcastPresence(userId, isOn) {
-  for (const id of await friendIds(userId)) io.to('u:' + id).emit('presence', { userId, online: isOn });
+  const ev = { userId, online: isOn };
+  for (const id of await friendIds(userId)) io.to('u:' + id).emit('presence', ev);
+  const { rows } = await pool.query('SELECT server_id FROM server_members WHERE user_id=$1', [userId]);
+  for (const r of rows) io.to('s:' + r.server_id).emit('presence', ev);
 }
 
 io.on('connection', (socket) => {
@@ -238,6 +307,75 @@ io.on('connection', (socket) => {
        RETURNING id, sender_id, receiver_id, content, created_at`, [me, to, content]);
     io.to('u:' + me).to('u:' + to).emit('message', rows[0]);
     return { ok: true };
+  });
+
+  on('server:create', async ({ name }) => {
+    name = typeof name === 'string' ? name.trim() : '';
+    if (!name || name.length > 30) return { error: 'Server names must be 1–30 characters.' };
+    const s = (await pool.query(
+      'INSERT INTO servers (name, owner_id, invite_code) VALUES ($1,$2,$3) RETURNING id, name, owner_id, invite_code',
+      [name, me, crypto.randomBytes(4).toString('hex')])).rows[0];
+    await pool.query('INSERT INTO server_members (server_id, user_id) VALUES ($1,$2)', [s.id, me]);
+    await pool.query("INSERT INTO channels (server_id, name) VALUES ($1, 'general')", [s.id]);
+    io.in('u:' + me).socketsJoin('s:' + s.id);
+    io.to('u:' + me).emit('server:added', { server: s });
+    return { ok: true, serverId: s.id };
+  });
+
+  on('server:join', async ({ code }) => {
+    code = typeof code === 'string' ? code.trim().toLowerCase() : '';
+    const s = code && (await pool.query('SELECT id, name, owner_id, invite_code FROM servers WHERE invite_code=$1', [code])).rows[0];
+    if (!s) return { error: 'That invite code is not valid.' };
+    if (await isMember(me, s.id)) return { error: 'You are already in that server.' };
+    await pool.query('INSERT INTO server_members (server_id, user_id) VALUES ($1,$2)', [s.id, me]);
+    io.in('u:' + me).socketsJoin('s:' + s.id);
+    io.to('u:' + me).emit('server:added', { server: s });
+    io.to('s:' + s.id).emit('member:joined', { serverId: s.id, member: { id: me, username: myName, online: true } });
+    return { ok: true, serverId: s.id };
+  });
+
+  on('channel:create', async ({ serverId, name }) => {
+    serverId = Number(serverId);
+    const s = (await pool.query('SELECT owner_id FROM servers WHERE id=$1', [serverId])).rows[0];
+    if (!s || s.owner_id !== me) return { error: 'Only the server owner can add channels.' };
+    name = String(name || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '').slice(0, 30);
+    if (!name) return { error: 'Use letters, numbers, dashes or underscores.' };
+    try {
+      const { rows } = await pool.query('INSERT INTO channels (server_id, name) VALUES ($1,$2) RETURNING id, name', [serverId, name]);
+      io.to('s:' + serverId).emit('channel:added', { serverId, channel: rows[0] });
+    } catch (e) {
+      if (e.code === '23505') return { error: 'A channel with that name already exists.' };
+      throw e;
+    }
+  });
+
+  on('channel:message', async ({ channelId, content }) => {
+    channelId = Number(channelId);
+    content = typeof content === 'string' ? content.trim() : '';
+    if (!channelId || !content) return { error: 'Write a message first.' };
+    if (content.length > 2000) return { error: 'Messages can be up to 2000 characters.' };
+    const c = (await pool.query('SELECT server_id FROM channels WHERE id=$1', [channelId])).rows[0];
+    if (!c || !(await isMember(me, c.server_id))) return { error: 'You cannot post in this channel.' };
+    const { rows } = await pool.query(
+      'INSERT INTO channel_messages (channel_id, sender_id, content) VALUES ($1,$2,$3) RETURNING id, channel_id, sender_id, content, created_at',
+      [channelId, me, content]);
+    io.to('s:' + c.server_id).emit('channel:message', { ...rows[0], username: myName, serverId: c.server_id });
+  });
+
+  on('server:leave', async ({ serverId }) => {
+    serverId = Number(serverId);
+    const s = (await pool.query('SELECT owner_id FROM servers WHERE id=$1', [serverId])).rows[0];
+    if (!s || !(await isMember(me, serverId))) return { error: 'You are not in that server.' };
+    if (s.owner_id === me) {
+      await pool.query('DELETE FROM servers WHERE id=$1', [serverId]);
+      io.to('s:' + serverId).emit('server:removed', { serverId, deleted: true });
+      io.in('s:' + serverId).socketsLeave('s:' + serverId);
+    } else {
+      await pool.query('DELETE FROM server_members WHERE server_id=$1 AND user_id=$2', [serverId, me]);
+      io.to('u:' + me).emit('server:removed', { serverId });
+      io.in('u:' + me).socketsLeave('s:' + serverId);
+      io.to('s:' + serverId).emit('member:left', { serverId, userId: me });
+    }
   });
 
   socket.on('typing', async (data) => {
