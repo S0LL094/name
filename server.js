@@ -79,6 +79,13 @@ async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS channel_messages_idx ON channel_messages (channel_id, id);
+    ALTER TABLE servers ADD COLUMN IF NOT EXISTS is_group BOOLEAN NOT NULL DEFAULT FALSE;
+    CREATE TABLE IF NOT EXISTS blocks (
+      blocker_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      blocked_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (blocker_id, blocked_id)
+    );
     ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
     ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS reply_to INT;
     ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;
@@ -183,16 +190,26 @@ app.get('/api/users/search', auth, wrap(async (req, res) => {
     `SELECT u.id, u.username, u.avatar_v AS av, f.status, f.requester_id
      FROM users u
      LEFT JOIN friendships f ON (f.requester_id=u.id AND f.addressee_id=$1) OR (f.requester_id=$1 AND f.addressee_id=u.id)
-     WHERE u.id<>$1 AND u.username ILIKE $2 ORDER BY u.username LIMIT 10`, [req.user.id, like]);
+     WHERE u.id<>$1 AND u.username ILIKE $2
+     AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker_id=u.id AND b.blocked_id=$1) OR (b.blocker_id=$1 AND b.blocked_id=u.id))
+     ORDER BY u.username LIMIT 10`, [req.user.id, like]);
   res.json({ users: rows });
 }));
 
 app.get('/api/friends', auth, wrap(async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT u.id, u.username, u.avatar_v AS av FROM friendships f
+    `SELECT u.id, u.username, u.avatar_v AS av,
+     (SELECT MAX(created_at) FROM messages WHERE (sender_id=$1 AND receiver_id=u.id) OR (sender_id=u.id AND receiver_id=$1)) AS last
+     FROM friendships f
      JOIN users u ON u.id = CASE WHEN f.requester_id=$1 THEN f.addressee_id ELSE f.requester_id END
      WHERE f.status='accepted' AND (f.requester_id=$1 OR f.addressee_id=$1) ORDER BY u.username`, [req.user.id]);
   res.json({ friends: rows.map((r) => ({ ...r, online: isOnline(r.id) })) });
+}));
+
+app.get('/api/blocks', auth, wrap(async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT u.id, u.username, u.avatar_v AS av FROM blocks b JOIN users u ON u.id=b.blocked_id WHERE b.blocker_id=$1 ORDER BY u.username', [req.user.id]);
+  res.json({ users: rows });
 }));
 
 app.get('/api/requests', auth, wrap(async (req, res) => {
@@ -244,7 +261,9 @@ const isMember = async (userId, serverId) =>
 
 app.get('/api/servers', auth, wrap(async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT s.id, s.name, s.owner_id, s.invite_code FROM servers s
+    `SELECT s.id, s.name, s.owner_id, s.invite_code, s.is_group,
+       (SELECT MAX(cm.created_at) FROM channel_messages cm JOIN channels c ON c.id=cm.channel_id WHERE c.server_id=s.id) AS last
+     FROM servers s
      JOIN server_members m ON m.server_id=s.id WHERE m.user_id=$1 ORDER BY s.created_at`, [req.user.id]);
   res.json({ servers: rows });
 }));
@@ -310,6 +329,8 @@ io.on('connection', (socket) => {
     if (!userId || userId === me) return { error: 'Invalid user.' };
     const target = (await pool.query('SELECT id FROM users WHERE id=$1', [userId])).rows[0];
     if (!target) return { error: 'User not found.' };
+    if ((await pool.query('SELECT 1 FROM blocks WHERE (blocker_id=$1 AND blocked_id=$2) OR (blocker_id=$2 AND blocked_id=$1)', [me, userId])).rowCount)
+      return { error: 'You cannot send a friend request to this user.' };
     const ex = (await pool.query(
       `SELECT * FROM friendships WHERE (requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1)`,
       [me, userId])).rows[0];
@@ -375,7 +396,7 @@ io.on('connection', (socket) => {
     name = typeof name === 'string' ? name.trim() : '';
     if (!name || name.length > 30) return { error: 'Server names must be 1–30 characters.' };
     const s = (await pool.query(
-      'INSERT INTO servers (name, owner_id, invite_code) VALUES ($1,$2,$3) RETURNING id, name, owner_id, invite_code',
+      'INSERT INTO servers (name, owner_id, invite_code) VALUES ($1,$2,$3) RETURNING id, name, owner_id, invite_code, is_group',
       [name, me, crypto.randomBytes(4).toString('hex')])).rows[0];
     await pool.query('INSERT INTO server_members (server_id, user_id) VALUES ($1,$2)', [s.id, me]);
     await pool.query("INSERT INTO channels (server_id, name) VALUES ($1, 'general')", [s.id]);
@@ -386,7 +407,7 @@ io.on('connection', (socket) => {
 
   on('server:join', async ({ code }) => {
     code = typeof code === 'string' ? code.trim().toLowerCase() : '';
-    const s = code && (await pool.query('SELECT id, name, owner_id, invite_code FROM servers WHERE invite_code=$1', [code])).rows[0];
+    const s = code && (await pool.query('SELECT id, name, owner_id, invite_code, is_group FROM servers WHERE invite_code=$1 AND NOT is_group', [code])).rows[0];
     if (!s) return { error: 'That invite code is not valid.' };
     if (await isMember(me, s.id)) return { error: 'You are already in that server.' };
     await pool.query('INSERT INTO server_members (server_id, user_id) VALUES ($1,$2)', [s.id, me]);
@@ -477,10 +498,78 @@ io.on('connection', (socket) => {
       socket.to('s:' + sid).emit('channel:typing', { channelId: Number(channelId), userId: me, username: myName, isTyping: !!isTyping });
   });
 
+  on('group:create', async ({ name, memberIds }) => {
+    const ids = [...new Set((Array.isArray(memberIds) ? memberIds : []).map(Number).filter((n) => n && n !== me))].slice(0, 9);
+    if (!ids.length) return { error: 'Pick at least one friend.' };
+    for (const id of ids) if (!(await areFriends(me, id))) return { error: 'You can only add friends to a group.' };
+    name = typeof name === 'string' ? name.trim().slice(0, 30) : '';
+    if (!name) name = (await pool.query('SELECT username FROM users WHERE id=ANY($1)', [[me, ...ids]])).rows.map((r) => r.username).join(', ').slice(0, 30);
+    const s = (await pool.query(
+      'INSERT INTO servers (name, owner_id, invite_code, is_group) VALUES ($1,$2,$3,TRUE) RETURNING id, name, owner_id, invite_code, is_group',
+      [name, me, crypto.randomBytes(4).toString('hex')])).rows[0];
+    for (const id of [me, ...ids]) await pool.query('INSERT INTO server_members (server_id, user_id) VALUES ($1,$2)', [s.id, id]);
+    await pool.query("INSERT INTO channels (server_id, name) VALUES ($1, 'chat')", [s.id]);
+    for (const id of [me, ...ids]) {
+      io.in('u:' + id).socketsJoin('s:' + s.id);
+      io.to('u:' + id).emit('server:added', { server: s });
+    }
+    return { ok: true, serverId: s.id };
+  });
+
+  on('group:add', async ({ groupId, userId }) => {
+    groupId = Number(groupId); userId = Number(userId);
+    const g = (await pool.query('SELECT id, name, owner_id, invite_code, is_group FROM servers WHERE id=$1', [groupId])).rows[0];
+    if (!g || !g.is_group || !(await isMember(me, groupId))) return { error: 'Group not found.' };
+    if (!(await areFriends(me, userId))) return { error: 'You can only add your friends.' };
+    if (await isMember(userId, groupId)) return { error: 'They are already in this group.' };
+    if ((await pool.query('SELECT COUNT(*)::int AS n FROM server_members WHERE server_id=$1', [groupId])).rows[0].n >= 10)
+      return { error: 'Groups can have up to 10 members.' };
+    await pool.query('INSERT INTO server_members (server_id, user_id) VALUES ($1,$2)', [groupId, userId]);
+    const u = (await pool.query('SELECT id, username, avatar_v AS av FROM users WHERE id=$1', [userId])).rows[0];
+    io.in('u:' + userId).socketsJoin('s:' + groupId);
+    io.to('u:' + userId).emit('server:added', { server: g });
+    io.to('s:' + groupId).emit('member:joined', { serverId: groupId, member: { ...u, online: isOnline(userId) } });
+  });
+
+  on('group:kick', async ({ groupId, userId }) => {
+    groupId = Number(groupId); userId = Number(userId);
+    const g = (await pool.query('SELECT owner_id, is_group FROM servers WHERE id=$1', [groupId])).rows[0];
+    if (!g || !g.is_group || g.owner_id !== me) return { error: 'Only the group owner can remove members.' };
+    if (userId === me) return { error: 'Use Leave group instead.' };
+    const del = await pool.query('DELETE FROM server_members WHERE server_id=$1 AND user_id=$2', [groupId, userId]);
+    if (!del.rowCount) return { error: 'That person is not in the group.' };
+    io.to('u:' + userId).emit('server:removed', { serverId: groupId, kicked: true });
+    io.in('u:' + userId).socketsLeave('s:' + groupId);
+    io.to('s:' + groupId).emit('member:left', { serverId: groupId, userId });
+  });
+
+  on('user:block', async ({ userId }) => {
+    userId = Number(userId);
+    if (!userId || userId === me) return { error: 'Invalid user.' };
+    if (!(await pool.query('SELECT 1 FROM users WHERE id=$1', [userId])).rowCount) return { error: 'User not found.' };
+    await pool.query('INSERT INTO blocks (blocker_id, blocked_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [me, userId]);
+    await pool.query('DELETE FROM friendships WHERE (requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1)', [me, userId]);
+    io.to('u:' + me).emit('friend:removed', { userId });
+    io.to('u:' + userId).emit('friend:removed', { userId: me });
+  });
+
+  on('user:unblock', async ({ userId }) => {
+    await pool.query('DELETE FROM blocks WHERE blocker_id=$1 AND blocked_id=$2', [me, Number(userId)]);
+    io.to('u:' + me).emit('block:removed', { userId: Number(userId) });
+  });
+
   on('server:leave', async ({ serverId }) => {
     serverId = Number(serverId);
-    const s = (await pool.query('SELECT owner_id FROM servers WHERE id=$1', [serverId])).rows[0];
+    const s = (await pool.query('SELECT owner_id, is_group FROM servers WHERE id=$1', [serverId])).rows[0];
     if (!s || !(await isMember(me, serverId))) return { error: 'You are not in that server.' };
+    if (s.is_group && s.owner_id === me) {
+      const nx = (await pool.query('SELECT user_id FROM server_members WHERE server_id=$1 AND user_id<>$2 ORDER BY joined_at LIMIT 1', [serverId, me])).rows[0];
+      if (nx) {
+        await pool.query('UPDATE servers SET owner_id=$1 WHERE id=$2', [nx.user_id, serverId]);
+        s.owner_id = nx.user_id;
+        io.to('s:' + serverId).emit('group:owner', { serverId, ownerId: nx.user_id });
+      }
+    }
     if (s.owner_id === me) {
       await pool.query('DELETE FROM servers WHERE id=$1', [serverId]);
       io.to('s:' + serverId).emit('server:removed', { serverId, deleted: true });
