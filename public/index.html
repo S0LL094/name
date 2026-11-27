@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Huddle</title>
+<title>GHEASTCORD</title>
 <style>
 :root{--bg:#313338;--side:#2b2d31;--dark:#1e1f22;--input:#383a40;--hover:#35373c;--text:#dbdee1;--muted:#949ba4;--accent:#5865f2;--accent-h:#4752c4;--green:#23a55a;--grey:#80848e;--red:#da373c;color-scheme:dark}
 *{box-sizing:border-box;margin:0}
@@ -123,6 +123,11 @@ dialog p{color:var(--muted);font-size:14px}
 #ac button.on,#ac button:hover{background:var(--hover)}
 .row.unread .n{font-weight:700;color:#fff}
 .ch #pinsBtn{margin-left:auto}
+.tabs2{display:flex;flex-wrap:wrap;gap:4px;padding:8px 0 4px}
+.tab{background:var(--input);color:var(--muted);padding:4px 8px;font-size:13px}
+.tab.on{background:var(--accent);color:#fff}
+input[type=checkbox]{width:auto}
+label.row{cursor:pointer}
 @media(max-width:700px){
   #side{flex:1;width:auto}
   #app.chat-open #side,#app.chat-open #rail{display:none}
@@ -136,7 +141,7 @@ dialog p{color:var(--muted);font-size:14px}
 
 <div id="auth" class="auth" hidden>
   <form class="card" id="authForm" autocomplete="on">
-    <h1>Huddle</h1>
+    <h1>GHEASTCORD</h1>
     <p class="sub">Chat with your friends in real time.</p>
     <div class="tabs">
       <button type="button" id="tabLogin" class="on">Sign in</button>
@@ -170,14 +175,9 @@ dialog p{color:var(--muted);font-size:14px}
       <input id="search" placeholder="Search by username" autocomplete="off" autocapitalize="none" spellcheck="false">
       <ul id="results"></ul>
 
-      <div id="reqSec" hidden>
-        <h3>Pending requests <span class="badge" id="reqCount"></span></h3>
-        <ul id="reqs"></ul>
-      </div>
-
-      <h3>Friends</h3>
-      <ul id="friends"></ul>
-      <p class="empty" id="noFriends" hidden>No friends yet. Search for a username above to send a request.</p>
+      <div class="tabs2" id="homeTabs"></div>
+      <button class="sm" id="newGroup" style="margin:4px 8px">New group chat</button>
+      <ul id="homeList"></ul>
     </div>
     <div class="scroll" id="srvScroll" hidden>
       <div class="srvhead">
@@ -200,6 +200,7 @@ dialog p{color:var(--muted);font-size:14px}
         <div class="av" id="chAv"></div>
         <div><b id="chName"></b><span class="st" id="chStatus"></span></div>
         <button class="ghost sm" id="pinsBtn" hidden>Pins</button>
+        <button class="ghost sm" id="grpBtn" hidden>Members</button>
       </div>
       <button id="jump" hidden>Jump to latest ↓</button>
       <div id="msgs" aria-live="polite"></div>
@@ -213,6 +214,28 @@ dialog p{color:var(--muted);font-size:14px}
     </section>
   </main>
 </div>
+
+<dialog id="grpNewDlg">
+  <form id="grpNewForm">
+    <h2>New group chat</h2>
+    <input id="grpName" placeholder="Group name (optional)" maxlength="30">
+    <p>Pick up to 9 friends.</p>
+    <div id="grpPick"></div>
+    <button type="submit">Create group</button>
+    <button type="button" class="ghost" id="grpNewClose">Cancel</button>
+  </form>
+</dialog>
+
+<dialog id="grpDlg">
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <h2 id="grpTitle"></h2>
+    <div id="grpMembers"></div>
+    <h3 style="font-size:14px;color:var(--muted)">Add a friend</h3>
+    <div id="grpAdd"></div>
+    <button class="deny" id="grpLeave">Leave group</button>
+    <button class="ghost" id="grpClose">Close</button>
+  </div>
+</dialog>
 
 <dialog id="pinDlg" style="width:min(520px,92vw)">
   <div style="display:flex;flex-direction:column;gap:10px">
@@ -262,6 +285,7 @@ let me = null, socket = null, active = null, mode = 'login';
 let friends = new Map(), requests = [], typingFrom = {}, typingTimers = {};
 let servers = new Map(), curServer = null, activeChannel = null;
 let chMsgs = [], chMore = false, loadingOlder = false, ctx = null, typingSent = null, chTyping = {};
+let blocked = [], homeTab = 'chats';
 const errToast = (res) => { if (res && res.error) toast(res.error); };
 let lastMsg = null, iAmTyping = false, typingOff = null, toastTimer = null, searchTimer = null;
 
@@ -353,10 +377,10 @@ async function start() {
 }
 
 async function loadLists() {
-  const [f, r] = await Promise.all([api('/api/friends'), api('/api/requests')]);
+  const [f, r, b] = await Promise.all([api('/api/friends'), api('/api/requests'), api('/api/blocks')]);
   const old = friends;
   friends = new Map(f.friends.map((x) => [x.id, { ...x, unread: (old.get(x.id) && old.get(x.id).unread) || 0 }]));
-  requests = r.requests;
+  requests = r.requests; blocked = b.users;
   renderFriends(); renderReqs();
   if (active && friends.has(active)) { updateHeader(); loadHistory(); }
 }
@@ -392,21 +416,40 @@ function connectSocket() {
     const sm = curServer && curServer.members.get(userId); if (sm) { sm.av = av; renderMembers(); }
     requests.forEach((r) => { if (r.userId === userId) r.av = av; }); renderReqs();
   });
-  socket.on('server:added', ({ server }) => { servers.set(server.id, server); renderRail(); });
-  socket.on('server:removed', ({ serverId, deleted }) => {
+  socket.on('friend:removed', ({ userId }) => {
+    if (active === userId) { stopTyping(); active = null; $('#app').classList.remove('chat-open'); $('#pane').hidden = true; $('#hero').hidden = false; }
+    loadLists().catch((e) => toast(e.message));
+  });
+  socket.on('block:removed', () => loadLists().catch((e) => toast(e.message)));
+  socket.on('group:owner', ({ serverId, ownerId }) => {
+    const g = servers.get(serverId); if (g) g.owner_id = ownerId;
+    if (curServer && curServer.id === serverId) curServer.owner_id = ownerId;
+  });
+  socket.on('server:added', ({ server }) => { servers.set(server.id, server); renderRail(); renderHome(); });
+  socket.on('server:removed', ({ serverId, deleted, kicked }) => {
     const s = servers.get(serverId); servers.delete(serverId);
-    if (curServer && curServer.id === serverId) { showHome(); if (deleted) toast((s ? s.name : 'The server') + ' was deleted.'); }
-    renderRail();
+    if (curServer && curServer.id === serverId) {
+      showHome();
+      if (deleted) toast((s ? s.name : 'The server') + ' was deleted.');
+      else if (kicked) toast('You were removed from ' + (s ? s.name : 'the group') + '.');
+    }
+    renderRail(); renderHome();
   });
   socket.on('channel:added', ({ serverId, channel }) => {
     if (curServer && curServer.id === serverId && !curServer.channels.some((c) => c.id === channel.id)) {
       curServer.channels.push({ ...channel, unread: 0 }); renderChannels();
     }
   });
-  socket.on('member:joined', ({ serverId, member }) => { if (curServer && curServer.id === serverId) { curServer.members.set(member.id, member); renderMembers(); } });
-  socket.on('member:left', ({ serverId, userId }) => { if (curServer && curServer.id === serverId) { curServer.members.delete(userId); renderMembers(); } });
+  socket.on('member:joined', ({ serverId, member }) => { if (curServer && curServer.id === serverId) { curServer.members.set(member.id, member); renderMembers(); grpHdr(); } });
+  socket.on('member:left', ({ serverId, userId }) => { if (curServer && curServer.id === serverId) { curServer.members.delete(userId); renderMembers(); grpHdr(); } });
   socket.on('channel:message', (m) => {
-    if (!curServer || curServer.id !== m.serverId) return;
+    const sv = servers.get(m.serverId);
+    if (sv) sv.last = m.created_at;
+    if (!curServer || curServer.id !== m.serverId) {
+      if (sv && sv.is_group && m.sender_id !== me.id) { sv.unread = (sv.unread || 0) + 1; }
+      renderHome(); return;
+    }
+    if (sv && sv.is_group) renderHome();
     delete chTyping[m.channel_id + ':' + m.sender_id];
     if (activeChannel === m.channel_id) {
       const b = $('#msgs'), near = b.scrollHeight - b.scrollTop - b.clientHeight < 150;
@@ -439,39 +482,79 @@ function connectSocket() {
   });
   socket.on('message', (m) => {
     const peer = m.sender_id === me.id ? m.receiver_id : m.sender_id;
+    if (friends.has(peer)) friends.get(peer).last = m.created_at;
     if (m.sender_id !== me.id) { typingFrom[peer] = false; renderTyping(); }
-    if (active === peer) { addMsg(m, true); }
+    if (active === peer) { addMsg(m, true); renderHome(); }
     else if (m.sender_id !== me.id && friends.has(peer)) { friends.get(peer).unread++; renderFriends(); }
   });
 }
 
 // ---------- sidebar rendering ----------
-function renderFriends() {
-  const list = $('#friends'); list.textContent = '';
-  const sorted = [...friends.values()].sort((a, b) => b.online - a.online || a.username.localeCompare(b.username));
-  $('#noFriends').hidden = sorted.length > 0;
-  for (const f of sorted) {
-    const li = el('li', 'row click' + (f.id === active ? ' sel' : ''));
-    li.tabIndex = 0;
-    li.append(avatar(f.username, f.online, f.id, f.av), el('span', 'n', f.username));
-    if (f.unread) li.append(el('span', 'badge', f.unread > 99 ? '99+' : String(f.unread)));
-    li.onclick = () => openChat(f.id);
-    li.onkeydown = (e) => { if (e.key === 'Enter') openChat(f.id); };
-    list.append(li);
-  }
-}
+function renderFriends() { renderHome(); }
+function renderReqs() { renderHome(); }
 
-function renderReqs() {
-  $('#reqSec').hidden = requests.length === 0;
-  $('#reqCount').textContent = requests.length;
-  const list = $('#reqs'); list.textContent = '';
-  for (const r of requests) {
-    const li = el('li', 'row');
-    const yes = el('button', 'sm', 'Accept'), no = el('button', 'sm deny', 'Decline');
-    yes.onclick = () => { yes.disabled = no.disabled = true; socket.emit('friend:accept', { requestId: r.id }, (res) => { if (res && res.error) { toast(res.error); loadLists(); } }); };
-    no.onclick = () => { yes.disabled = no.disabled = true; socket.emit('friend:decline', { requestId: r.id }, (res) => { if (res && res.error) { toast(res.error); loadLists(); } }); };
-    li.append(avatar(r.username, undefined, r.userId, r.av), el('span', 'n', r.username), yes, no);
-    list.append(li);
+function renderHome() {
+  if (!me) return;
+  const bar = $('#homeTabs'); bar.textContent = '';
+  for (const [k, label] of [['chats', 'Messages'], ['online', 'Online'], ['all', 'All'], ['pending', 'Pending' + (requests.length ? ' (' + requests.length + ')' : '')], ['blocked', 'Blocked']]) {
+    const b = el('button', 'tab' + (homeTab === k ? ' on' : ''), label);
+    b.onclick = () => { homeTab = k; renderHome(); };
+    bar.append(b);
+  }
+  $('#newGroup').hidden = homeTab !== 'chats';
+  const list = $('#homeList'); list.textContent = '';
+  const fl = [...friends.values()].sort((a, b) => b.online - a.online || a.username.localeCompare(b.username));
+  const empty = (t) => list.append(el('li', 'empty', t));
+  const row = (av, name, click) => {
+    const li = el('li', 'row' + (click ? ' click' : ''));
+    li.append(av, el('span', 'n', name));
+    if (click) { li.tabIndex = 0; li.onclick = click; li.onkeydown = (e) => { if (e.key === 'Enter') click(); }; }
+    list.append(li); return li;
+  };
+  const badge = (li, n) => { if (n) li.append(el('span', 'badge', n > 99 ? '99+' : String(n))); };
+  if (homeTab === 'chats') {
+    const t = (x) => +new Date(x || 0);
+    const items = [...fl.map((f) => ({ f, last: f.last })), ...[...servers.values()].filter((s) => s.is_group).map((g) => ({ g, last: g.last }))]
+      .sort((a, b) => t(b.last) - t(a.last));
+    if (!items.length) empty('No conversations yet. Search for a username above to add a friend.');
+    for (const it of items) {
+      if (it.f) {
+        const li = row(avatar(it.f.username, it.f.online, it.f.id, it.f.av), it.f.username, () => openChat(it.f.id));
+        if (it.f.id === active) li.classList.add('sel');
+        badge(li, it.f.unread);
+      } else {
+        const li = row(avatar(it.g.name), it.g.name, () => openGroup(it.g.id));
+        li.querySelector('.n').append(el('span', 'hint', '  group'));
+        if (curServer && curServer.id === it.g.id) li.classList.add('sel');
+        badge(li, it.g.unread);
+      }
+    }
+  } else if (homeTab === 'online' || homeTab === 'all') {
+    const shown = homeTab === 'online' ? fl.filter((f) => f.online) : fl;
+    if (!shown.length) empty(homeTab === 'online' ? 'Nobody is online right now.' : 'No friends yet. Search for a username above.');
+    for (const f of shown) {
+      const li = row(avatar(f.username, f.online, f.id, f.av), f.username, () => openChat(f.id));
+      const b = el('button', 'sm deny', 'Block');
+      b.onclick = (e) => { e.stopPropagation(); if (confirm('Block ' + f.username + '? They will be removed from your friends.')) socket.emit('user:block', { userId: f.id }, errToast); };
+      li.append(b);
+    }
+  } else if (homeTab === 'pending') {
+    if (!requests.length) empty('No pending friend requests.');
+    for (const r of requests) {
+      const li = row(avatar(r.username, undefined, r.userId, r.av), r.username);
+      const yes = el('button', 'sm', 'Accept'), no = el('button', 'sm deny', 'Decline');
+      const go = (ev) => { yes.disabled = no.disabled = true; socket.emit(ev, { requestId: r.id }, (res) => { if (res && res.error) { toast(res.error); loadLists(); } }); };
+      yes.onclick = () => go('friend:accept'); no.onclick = () => go('friend:decline');
+      li.append(yes, no);
+    }
+  } else {
+    if (!blocked.length) empty('You have not blocked anyone.');
+    for (const u of blocked) {
+      const li = row(avatar(u.username, undefined, u.id, u.av), u.username);
+      const b = el('button', 'sm', 'Unblock');
+      b.onclick = () => socket.emit('user:unblock', { userId: u.id }, errToast);
+      li.append(b);
+    }
   }
 }
 
@@ -511,7 +594,7 @@ function updateHeader() {
   const f = friends.get(active); if (!f) return;
   const av = avatar(f.username, f.online, f.id, f.av);
   $('#chAv').replaceWith(Object.assign(av, { id: 'chAv' }));
-  $('#chName').textContent = f.username; $('#pinsBtn').hidden = true;
+  $('#chName').textContent = f.username; $('#pinsBtn').hidden = true; $('#grpBtn').hidden = true;
   $('#chStatus').textContent = f.online ? 'Online' : 'Offline';
   renderTyping();
 }
@@ -536,6 +619,7 @@ function stopTyping() {
 
 function openChat(id) {
   stopTyping(); clearCtx();
+  if (curServer && curServer.is_group) { curServer = null; activeChannel = null; $('#pinsBtn').hidden = true; $('#grpBtn').hidden = true; }
   active = id;
   friends.get(id).unread = 0;
   renderFriends();
@@ -615,7 +699,7 @@ $('#composer').addEventListener('submit', (e) => {
 // ---------- servers ----------
 async function loadServers() {
   servers = new Map((await api('/api/servers')).servers.map((s) => [s.id, s]));
-  renderRail();
+  renderRail(); renderHome();
   if (curServer) {
     if (!servers.has(curServer.id)) showHome();
     else if (activeChannel) loadChannelHistory();
@@ -623,9 +707,9 @@ async function loadServers() {
 }
 
 function renderRail() {
-  $('#homeBtn').classList.toggle('on', !curServer);
+  $('#homeBtn').classList.toggle('on', !curServer || curServer.is_group);
   const list = $('#srvList'); list.textContent = '';
-  for (const s of servers.values()) {
+  for (const s of [...servers.values()].filter((x) => !x.is_group)) {
     const b = el('button', 'rb' + (curServer && curServer.id === s.id ? ' on' : ''), s.name.charAt(0).toUpperCase());
     b.title = s.name; b.setAttribute('aria-label', s.name);
     b.onclick = () => selectServer(s.id).catch((err) => toast(err.message));
@@ -690,7 +774,7 @@ function openChannel(id) {
   $('#app').classList.add('chat-open');
   const av = el('div', 'av', '#'); av.id = 'chAv'; av.style.background = '#4e5058';
   $('#chAv').replaceWith(av);
-  $('#chName').textContent = c.name; $('#pinsBtn').hidden = false;
+  $('#chName').textContent = c.name; $('#pinsBtn').hidden = false; $('#grpBtn').hidden = true;
   $('#chStatus').textContent = curServer.name;
   $('#typing').textContent = '';
   loadChannelHistory().then(() => { if (window.innerWidth > 700) $('#text').focus(); });
@@ -957,6 +1041,75 @@ $('#text').addEventListener('keydown', (e) => {
   else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); acPick(acIdx); }
   else if (e.key === 'Escape') acClose();
 });
+
+// ---------- group chats ----------
+function grpHdr() { if (curServer && curServer.is_group) $('#chStatus').textContent = curServer.members.size + ' members'; }
+
+async function openGroup(id) {
+  try {
+    if (!servers.has(id)) await loadServers();
+    const d = await api('/api/servers/' + id), g = servers.get(id);
+    g.unread = 0; stopTyping(); clearCtx(); active = null; activeChannel = null;
+    curServer = { ...g, channels: d.channels.map((c) => ({ ...c, unread: 0, mentions: 0 })), members: new Map(d.members.map((m) => [m.id, m])) };
+    renderRail(); renderHome();
+    openChannel(curServer.channels[0].id);
+    $('#chName').textContent = g.name; $('#grpBtn').hidden = false; grpHdr();
+  } catch (err) { toast(err.message); }
+}
+
+$('#newGroup').onclick = () => {
+  if (!friends.size) return toast('Add some friends first.');
+  const box = $('#grpPick'); box.textContent = '';
+  for (const f of friends.values()) {
+    const l = el('label', 'row'), c = document.createElement('input');
+    c.type = 'checkbox'; c.value = f.id;
+    l.append(c, avatar(f.username, undefined, f.id, f.av), el('span', 'n', f.username));
+    box.append(l);
+  }
+  $('#grpNewDlg').showModal();
+};
+$('#grpNewClose').onclick = () => $('#grpNewDlg').close();
+$('#grpNewForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const ids = [...$('#grpPick').querySelectorAll('input:checked')].map((c) => Number(c.value));
+  socket.emit('group:create', { name: $('#grpName').value, memberIds: ids }, (res) => {
+    if (res.error) return toast(res.error);
+    $('#grpName').value = ''; $('#grpNewDlg').close(); openGroup(res.serverId);
+  });
+});
+
+function openGrpDlg() {
+  const g = curServer, owner = g.owner_id === me.id;
+  $('#grpTitle').textContent = g.name;
+  const ml = $('#grpMembers'); ml.textContent = '';
+  for (const m of g.members.values()) {
+    const r = el('div', 'row');
+    r.append(avatar(m.username, m.online, m.id, m.av), el('span', 'n', m.username + (m.id === g.owner_id ? ' (owner)' : '')));
+    if (owner && m.id !== me.id) {
+      const k = el('button', 'sm deny', 'Remove');
+      k.onclick = () => socket.emit('group:kick', { groupId: g.id, userId: m.id }, (res) => { errToast(res); openGrpDlg(); });
+      r.append(k);
+    }
+    ml.append(r);
+  }
+  const al = $('#grpAdd'); al.textContent = '';
+  const cand = [...friends.values()].filter((f) => !g.members.has(f.id));
+  if (!cand.length) al.append(el('p', '', 'All your friends are already in this group.'));
+  for (const f of cand) {
+    const r = el('div', 'row'), b = el('button', 'sm', 'Add');
+    r.append(avatar(f.username, f.online, f.id, f.av), el('span', 'n', f.username), b);
+    b.onclick = () => socket.emit('group:add', { groupId: g.id, userId: f.id }, (res) => { errToast(res); openGrpDlg(); });
+    al.append(r);
+  }
+  if (!$('#grpDlg').open) $('#grpDlg').showModal();
+}
+$('#grpBtn').onclick = openGrpDlg;
+$('#grpClose').onclick = () => $('#grpDlg').close();
+$('#grpLeave').onclick = () => {
+  if (!confirm('Leave "' + curServer.name + '"?')) return;
+  $('#grpDlg').close();
+  socket.emit('server:leave', { serverId: curServer.id }, errToast);
+};
 
 start();
 </script>
