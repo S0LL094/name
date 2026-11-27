@@ -128,6 +128,8 @@ dialog p{color:var(--muted);font-size:14px}
 .tab.on{background:var(--accent);color:#fff}
 input[type=checkbox]{width:auto}
 label.row{cursor:pointer}
+select{background:var(--dark);color:var(--text);border:0;border-radius:4px;padding:6px}
+input[type=color]{width:40px;height:30px;padding:0}
 @media(max-width:700px){
   #side{flex:1;width:auto}
   #app.chat-open #side,#app.chat-open #rail{display:none}
@@ -182,6 +184,7 @@ label.row{cursor:pointer}
     <div class="scroll" id="srvScroll" hidden>
       <div class="srvhead">
         <b id="srvName"></b>
+        <button class="ghost sm" id="rolesBtn" hidden>Roles</button>
         <button class="ghost sm" id="invite">Invite</button>
         <button class="ghost sm" id="leaveSrv">Leave</button>
       </div>
@@ -214,6 +217,52 @@ label.row{cursor:pointer}
     </section>
   </main>
 </div>
+
+<dialog id="roleDlg" style="width:min(640px,94vw)">
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <h2>Roles</h2>
+    <div id="roleList"></div>
+    <button class="sm" id="roleNew">New role</button>
+    <div id="roleForm" hidden style="display:flex;flex-direction:column;gap:8px">
+      <input id="roleName" maxlength="30" placeholder="Role name">
+      <label class="row"><input type="color" id="roleColor"><span class="n">Role colour</span><input type="checkbox" id="roleNoColor"><span>No colour</span></label>
+      <label class="row"><input type="checkbox" id="roleHoist"><span class="n">Display separately in the member list</span></label>
+      <div id="rolePerms"></div>
+      <button id="roleSave">Save role</button>
+      <button class="deny" id="roleDel">Delete role</button>
+    </div>
+    <button class="ghost" id="roleClose">Close</button>
+  </div>
+</dialog>
+
+<dialog id="memDlg">
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <h2 id="memTitle"></h2>
+    <div id="memRoles"></div>
+    <button class="deny" id="memKick">Kick from server</button>
+    <button class="ghost" id="memClose">Close</button>
+  </div>
+</dialog>
+
+<dialog id="newChDlg">
+  <form id="newChForm">
+    <h2>New channel</h2>
+    <input id="newChName" placeholder="channel-name" maxlength="30" required>
+    <label class="row"><input type="checkbox" id="newChPriv"><span class="n">Private (hidden from @everyone)</span></label>
+    <button type="submit">Create channel</button>
+    <button type="button" class="ghost" id="newChClose">Cancel</button>
+  </form>
+</dialog>
+
+<dialog id="ovDlg">
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <h2>Channel permissions</h2>
+    <select id="ovTarget"></select>
+    <div id="ovPerms"></div>
+    <button id="ovSave">Save</button>
+    <button class="ghost" id="ovClose">Close</button>
+  </div>
+</dialog>
 
 <dialog id="grpNewDlg">
   <form id="grpNewForm">
@@ -468,7 +517,9 @@ function connectSocket() {
     if (activeChannel !== channelId) return;
     chMsgs = chMsgs.filter((x) => x.id !== id); renderMsgs(false);
   });
+  socket.on('server:changed', ({ serverId }) => { if (curServer && curServer.id === serverId) refreshServer(); });
   socket.on('channel:typing', ({ channelId, userId, username, isTyping }) => {
+    if (userId === me.id) return;
     const k = channelId + ':' + userId; clearTimeout(typingTimers[k]);
     if (isTyping) { chTyping[k] = { channelId, username }; typingTimers[k] = setTimeout(() => { delete chTyping[k]; renderTyping(); }, 4000); }
     else delete chTyping[k];
@@ -594,7 +645,7 @@ function updateHeader() {
   const f = friends.get(active); if (!f) return;
   const av = avatar(f.username, f.online, f.id, f.av);
   $('#chAv').replaceWith(Object.assign(av, { id: 'chAv' }));
-  $('#chName').textContent = f.username; $('#pinsBtn').hidden = true; $('#grpBtn').hidden = true;
+  $('#chName').textContent = f.username; $('#pinsBtn').hidden = true; $('#grpBtn').hidden = true; updateComposer();
   $('#chStatus').textContent = f.online ? 'Online' : 'Offline';
   renderTyping();
 }
@@ -730,13 +781,13 @@ async function selectServer(id) {
   if (!servers.has(id)) await loadServers();
   const d = await api('/api/servers/' + id);
   stopTyping(); active = null; activeChannel = null;
-  curServer = { ...servers.get(id), channels: d.channels.map((c) => ({ ...c, unread: 0, mentions: 0 })), members: new Map(d.members.map((m) => [m.id, m])) };
+  curServer = { ...servers.get(id), channels: d.channels.map((c) => ({ ...c, unread: 0, mentions: 0 })), members: new Map(d.members.map((m) => [m.id, m])), roles: d.roles, perms: d.perms, top: d.top, overrides: d.overrides };
   $('#dmScroll').hidden = true; $('#srvScroll').hidden = false;
   $('#pane').hidden = true; $('#hero').hidden = false;
   $('#app').classList.remove('chat-open');
   $('#srvName').textContent = curServer.name;
   const owner = curServer.owner_id === me.id;
-  $('#addCh').hidden = !owner;
+  $('#addCh').hidden = !hasPerm(P.MANAGE_CHANNELS); $('#rolesBtn').hidden = !hasPerm(P.MANAGE_ROLES);
   $('#leaveSrv').textContent = owner ? 'Delete' : 'Leave';
   renderRail(); renderChannels(); renderMembers();
   if (window.innerWidth > 700 && curServer.channels[0]) openChannel(curServer.channels[0].id);
@@ -750,6 +801,11 @@ function renderChannels() {
     li.tabIndex = 0;
     li.append(el('span', 'hint', '#'), el('span', 'n', c.name));
     if (c.mentions) li.append(el('span', 'badge', String(c.mentions)));
+    if (!curServer.is_group && hasPerm(P.MANAGE_CHANNELS)) {
+      const gear = el('button', 'ghost sm', '⚙'); gear.setAttribute('aria-label', 'Channel permissions');
+      gear.onclick = (e) => { e.stopPropagation(); openOvDlg(c.id); };
+      li.append(gear);
+    }
     li.onclick = () => openChannel(c.id);
     li.onkeydown = (e) => { if (e.key === 'Enter') openChannel(c.id); };
     list.append(li);
@@ -758,11 +814,25 @@ function renderChannels() {
 
 function renderMembers() {
   const list = $('#members'); list.textContent = '';
+  const roles = (curServer.roles || []).filter((r) => r.hoist && !r.is_everyone);
   const sorted = [...curServer.members.values()].sort((a, b) => b.online - a.online || a.username.localeCompare(b.username));
+  const groups = roles.map((r) => ({ title: r.name, items: [] })), rest = { title: '', items: [] };
   for (const m of sorted) {
-    const li = el('li', 'row');
-    li.append(avatar(m.username, m.online, m.id, m.av), el('span', 'n', m.username + (m.id === curServer.owner_id ? ' (owner)' : '')));
-    list.append(li);
+    const idx = roles.findIndex((r) => (m.roles || []).includes(r.id));
+    (idx >= 0 ? groups[idx] : rest).items.push(m);
+  }
+  const canManage = !curServer.is_group && (hasPerm(P.MANAGE_ROLES) || hasPerm(P.KICK));
+  for (const g of [...groups, rest]) {
+    if (!g.items.length) continue;
+    if (g.title) list.append(el('li', 'empty', g.title + ' — ' + g.items.length));
+    for (const m of g.items) {
+      const li = el('li', 'row' + (canManage && m.id !== me.id ? ' click' : ''));
+      const n = el('span', 'n', m.username + (m.id === curServer.owner_id ? ' (owner)' : ''));
+      const col = nameColor(m.id); if (col) n.style.color = col;
+      li.append(avatar(m.username, m.online, m.id, m.av), n);
+      if (canManage && m.id !== me.id) li.onclick = () => openMemDlg(m.id);
+      list.append(li);
+    }
   }
 }
 
@@ -774,7 +844,7 @@ function openChannel(id) {
   $('#app').classList.add('chat-open');
   const av = el('div', 'av', '#'); av.id = 'chAv'; av.style.background = '#4e5058';
   $('#chAv').replaceWith(av);
-  $('#chName').textContent = c.name; $('#pinsBtn').hidden = false; $('#grpBtn').hidden = true;
+  $('#chName').textContent = c.name; $('#pinsBtn').hidden = false; $('#grpBtn').hidden = true; updateComposer();
   $('#chStatus').textContent = curServer.name;
   $('#typing').textContent = '';
   loadChannelHistory().then(() => { if (window.innerWidth > 700) $('#text').focus(); });
@@ -801,10 +871,15 @@ function srvAction(ev, data, inputId) {
 }
 $('#createForm').addEventListener('submit', (e) => { e.preventDefault(); srvAction('server:create', { name: $('#srvNameIn').value }, '#srvNameIn'); });
 $('#joinForm').addEventListener('submit', (e) => { e.preventDefault(); srvAction('server:join', { code: $('#codeIn').value }, '#codeIn'); });
-$('#addCh').onclick = () => {
-  const name = prompt('New channel name'); if (!name) return;
-  socket.emit('channel:create', { serverId: curServer.id, name }, (res) => { if (res.error) toast(res.error); });
-};
+$('#addCh').onclick = () => $('#newChDlg').showModal();
+$('#newChClose').onclick = () => $('#newChDlg').close();
+$('#newChForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  socket.emit('channel:create', { serverId: curServer.id, name: $('#newChName').value, isPrivate: $('#newChPriv').checked }, (res) => {
+    if (res.error) return toast(res.error);
+    $('#newChName').value = ''; $('#newChPriv').checked = false; $('#newChDlg').close();
+  });
+});
 $('#invite').onclick = async () => {
   const code = curServer.invite_code;
   try { await navigator.clipboard.writeText(code); toast('Invite code ' + code + ' copied. Friends join with the + button.'); }
@@ -857,7 +932,13 @@ $('#pfpRemove').onclick = () => socket.emit('avatar:set', { image: null }, (res)
 
 // ---------- message features ----------
 const EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🎉', '👀', '🔥'];
-const mentionsMe = (t) => /@(everyone|here)\b/.test(t) || new RegExp('@' + me.username + '\\b', 'i').test(t);
+const mentionsMe = (t) => /@(everyone|here)\b/.test(t) || new RegExp('@' + me.username + '\\b', 'i').test(t) || myRoleMention(t);
+function myRoleMention(t) {
+  const m = curServer && curServer.members.get(me.id);
+  if (!m || !m.roles) return false;
+  const low = t.toLowerCase();
+  return (curServer.roles || []).some((r) => !r.is_everyone && m.roles.includes(r.id) && low.includes('@' + r.name.replace(/\s+/g, '_').toLowerCase()));
+}
 
 function inline(text, parent) {
   const re = /`([^`\n]+)`|\*\*(.+?)\*\*|~~(.+?)~~|\|\|(.+?)\|\||\*(.+?)\*|(?<![A-Za-z0-9])_(.+?)_(?![A-Za-z0-9])|(https?:\/\/[^\s<]+)|(@[A-Za-z0-9_]+)|(#[a-z0-9_-]+)/g;
@@ -873,7 +954,7 @@ function inline(text, parent) {
     else if (m[7]) { const a = el('a', '', m[7]); a.href = m[7]; a.target = '_blank'; a.rel = 'noopener noreferrer'; parent.append(a); }
     else if (m[8]) {
       const n = m[8].slice(1).toLowerCase();
-      const ok = curServer && (n === 'everyone' || n === 'here' || [...curServer.members.values()].some((u) => u.username.toLowerCase() === n));
+      const ok = curServer && (n === 'everyone' || n === 'here' || [...curServer.members.values()].some((u) => u.username.toLowerCase() === n) || (curServer.roles || []).some((r) => !r.is_everyone && r.name.replace(/\s+/g, '_').toLowerCase() === n));
       parent.append(ok ? el('span', 'mention', m[8]) : m[8]);
     } else {
       const c = curServer && curServer.channels.find((x) => x.name === m[9].slice(1));
@@ -899,7 +980,7 @@ function renderContent(text, box) {
 
 function msgRow(m, last) {
   if (m.is_system) { const d = el('div', 'sys', m.username + ' ' + m.content); d.dataset.id = m.id; return d; }
-  const mine = m.sender_id === me.id, owner = curServer.owner_id === me.id, t = new Date(m.created_at);
+  const mine = m.sender_id === me.id, mod = hasChPerm(P.MANAGE_MESSAGES), canReact = hasChPerm(P.REACT), t = new Date(m.created_at);
   const grouped = last && last.sender_id === m.sender_id && !m.reply_to && t - new Date(last.created_at) < 300000;
   const row = el('div', 'msg' + (grouped ? ' grouped' : '') + (!mine && mentionsMe(m.content) ? ' mentioned' : ''));
   row.dataset.id = m.id;
@@ -910,7 +991,7 @@ function msgRow(m, last) {
     if (m.reply_username) r.onclick = (e) => { e.stopPropagation(); jumpTo(m.reply_to); };
     body.append(r);
   }
-  if (!grouped) { const head = el('div', 'mh'); head.append(el('b', '', m.username), el('time', '', fmt(t))); body.append(head); }
+  if (!grouped) { const head = el('div', 'mh'); const nb = el('b', '', m.username), nc = nameColor(m.sender_id); if (nc) nb.style.color = nc; head.append(nb, el('time', '', fmt(t))); body.append(head); }
   const mc = el('div', 'mc'); renderContent(m.content, mc);
   if (m.edited_at) mc.append(el('span', 'edited', ' (edited)'));
   if (m.pinned) mc.append(el('span', 'edited', ' 📌 pinned'));
@@ -928,11 +1009,11 @@ function msgRow(m, last) {
   row.append(body);
   const acts = el('div', 'acts');
   const add = (label, title, fn) => { const b = el('button', '', label); b.title = title; b.setAttribute('aria-label', title); b.onclick = (e) => { e.stopPropagation(); fn(b); }; acts.append(b); };
-  add('😀', 'Add reaction', (b) => openPicker(b, m));
+  if (canReact) add('😀', 'Add reaction', (b) => openPicker(b, m));
   add('↩', 'Reply', () => setCtx('reply', m));
   if (mine) add('✎', 'Edit', () => setCtx('edit', m));
-  if (owner) add(m.pinned ? '📍' : '📌', m.pinned ? 'Unpin' : 'Pin', () => socket.emit('message:pin', { id: m.id, pinned: !m.pinned }, errToast));
-  if (mine || owner) add('🗑', 'Delete', () => { if (confirm('Delete this message?')) socket.emit('message:delete', { id: m.id }, errToast); });
+  if (mod) add(m.pinned ? '📍' : '📌', m.pinned ? 'Unpin' : 'Pin', () => socket.emit('message:pin', { id: m.id, pinned: !m.pinned }, errToast));
+  if (mine || mod) add('🗑', 'Delete', () => { if (confirm('Delete this message?')) socket.emit('message:delete', { id: m.id }, errToast); });
   row.append(acts);
   row.addEventListener('click', (e) => { if (!e.target.closest('button,a,.spoiler,.chanlink')) row.classList.toggle('open'); });
   return row;
@@ -1023,7 +1104,7 @@ function acUpdate() {
   const m = activeChannel && curServer && /(^|\s)([@#])([\w-]*)$/.exec(pre);
   if (!m) return acClose();
   const q = m[3].toLowerCase();
-  const opts = m[2] === '@' ? ['everyone', 'here', ...[...curServer.members.values()].map((u) => u.username)] : curServer.channels.map((c) => c.name);
+  const opts = m[2] === '@' ? ['everyone', 'here', ...(curServer.roles || []).filter((r) => !r.is_everyone).map((r) => r.name.replace(/\s+/g, '_')), ...[...curServer.members.values()].map((u) => u.username)] : curServer.channels.map((c) => c.name);
   acItems = opts.filter((n) => n.toLowerCase().startsWith(q)).slice(0, 6).map((n) => ({ sym: m[2], name: n, start: pre.length - m[3].length - 1 }));
   acIdx = 0; renderAc();
 }
@@ -1050,7 +1131,7 @@ async function openGroup(id) {
     if (!servers.has(id)) await loadServers();
     const d = await api('/api/servers/' + id), g = servers.get(id);
     g.unread = 0; stopTyping(); clearCtx(); active = null; activeChannel = null;
-    curServer = { ...g, channels: d.channels.map((c) => ({ ...c, unread: 0, mentions: 0 })), members: new Map(d.members.map((m) => [m.id, m])) };
+    curServer = { ...g, channels: d.channels.map((c) => ({ ...c, unread: 0, mentions: 0 })), members: new Map(d.members.map((m) => [m.id, m])), roles: d.roles, perms: d.perms, top: d.top, overrides: d.overrides };
     renderRail(); renderHome();
     openChannel(curServer.channels[0].id);
     $('#chName').textContent = g.name; $('#grpBtn').hidden = false; grpHdr();
@@ -1110,6 +1191,147 @@ $('#grpLeave').onclick = () => {
   $('#grpDlg').close();
   socket.emit('server:leave', { serverId: curServer.id }, errToast);
 };
+
+// ---------- roles & permissions ----------
+const P = { VIEW: 1, SEND: 2, MANAGE_MESSAGES: 4, MANAGE_CHANNELS: 8, MANAGE_ROLES: 16, KICK: 32, BAN: 64, TIMEOUT: 128, MENTION_EVERYONE: 256, REACT: 512, NICKNAME: 1024, MANAGE_SERVER: 2048, ADMIN: 4096 };
+const PERM_LABELS = [['VIEW', 'View channels'], ['SEND', 'Send messages'], ['MANAGE_MESSAGES', 'Manage messages'], ['MANAGE_CHANNELS', 'Manage channels'], ['MANAGE_ROLES', 'Manage roles'], ['KICK', 'Kick members'], ['BAN', 'Ban members'], ['TIMEOUT', 'Time out members'], ['MENTION_EVERYONE', 'Mention @everyone'], ['REACT', 'Add reactions'], ['NICKNAME', 'Change nickname'], ['MANAGE_SERVER', 'Manage server'], ['ADMIN', 'Administrator']];
+const OV_PERMS = [['VIEW', 'View channel'], ['SEND', 'Send messages'], ['MANAGE_MESSAGES', 'Manage messages'], ['MENTION_EVERYONE', 'Mention @everyone'], ['REACT', 'Add reactions']];
+let roleSel = null, ovChannel = null;
+
+const hasPerm = (bit) => !!curServer && ((curServer.perms & bit) === bit);
+function hasChPerm(bit) {
+  const c = curServer && curServer.channels.find((x) => x.id === activeChannel);
+  return !!c && ((c.perm & bit) === bit);
+}
+function nameColor(uid) {
+  const m = curServer && curServer.members.get(uid);
+  if (!m || !m.roles) return '';
+  let best = null;
+  for (const r of curServer.roles || []) if (m.roles.includes(r.id) && r.color && (!best || r.position > best.position)) best = r;
+  return best ? best.color : '';
+}
+function updateComposer() {
+  const noSend = !!activeChannel && !hasChPerm(P.SEND);
+  $('#text').disabled = noSend;
+  $('#text').placeholder = noSend ? "You don't have permission to send messages here" : 'Write a message';
+}
+
+async function refreshServer() {
+  if (!curServer || curServer.is_group) return;
+  const id = curServer.id, ac = activeChannel;
+  try {
+    const d = await api('/api/servers/' + id);
+    if (!curServer || curServer.id !== id) return;
+    const old = new Map(curServer.channels.map((c) => [c.id, c]));
+    Object.assign(curServer, {
+      roles: d.roles, perms: d.perms, top: d.top, overrides: d.overrides,
+      members: new Map(d.members.map((m) => [m.id, m])),
+      channels: d.channels.map((c) => ({ ...c, unread: (old.get(c.id) || {}).unread || 0, mentions: (old.get(c.id) || {}).mentions || 0 })),
+    });
+    $('#addCh').hidden = !hasPerm(P.MANAGE_CHANNELS); $('#rolesBtn').hidden = !hasPerm(P.MANAGE_ROLES);
+    renderChannels(); renderMembers();
+    if (ac && !curServer.channels.some((c) => c.id === ac)) {
+      activeChannel = null; $('#pane').hidden = true; $('#hero').hidden = false; $('#app').classList.remove('chat-open');
+    } else if (ac) { updateComposer(); renderMsgs(false); }
+    if ($('#roleDlg').open) renderRoleDlg();
+  } catch (e) { toast(e.message); }
+}
+
+function renderRoleDlg() {
+  const roles = curServer.roles || [];
+  if (!roles.some((r) => r.id === roleSel)) roleSel = (roles[0] || {}).id;
+  const list = $('#roleList'); list.textContent = '';
+  for (const r of roles) {
+    const li = el('div', 'row click' + (r.id === roleSel ? ' sel' : ''));
+    const n = el('span', 'n', r.name); if (r.color) n.style.color = r.color;
+    li.append(n);
+    li.onclick = () => { roleSel = r.id; renderRoleDlg(); };
+    if (!r.is_everyone && r.position < curServer.top) {
+      for (const [lab, dir] of [['▲', 'up'], ['▼', 'down']]) {
+        const b = el('button', 'ghost sm', lab); b.setAttribute('aria-label', 'Move ' + dir);
+        b.onclick = (e) => { e.stopPropagation(); socket.emit('role:move', { roleId: r.id, dir }, errToast); };
+        li.append(b);
+      }
+    }
+    list.append(li);
+  }
+  const r = roles.find((x) => x.id === roleSel);
+  $('#roleForm').hidden = !r;
+  if (!r) return;
+  const editable = r.position < curServer.top;
+  $('#roleName').value = r.name; $('#roleName').disabled = r.is_everyone || !editable;
+  $('#roleColor').value = r.color || '#99aab5'; $('#roleNoColor').checked = !r.color;
+  $('#roleHoist').checked = r.hoist;
+  const pb = $('#rolePerms'); pb.textContent = '';
+  for (const [k, lab] of PERM_LABELS) {
+    const l = el('label', 'row'), c = document.createElement('input');
+    c.type = 'checkbox'; c.dataset.bit = P[k]; c.checked = !!(r.permissions & P[k]);
+    c.disabled = !editable || (curServer.perms & P[k]) !== P[k];
+    l.append(c, el('span', 'n', lab)); pb.append(l);
+  }
+  $('#roleSave').disabled = !editable; $('#roleDel').hidden = r.is_everyone || !editable;
+}
+$('#rolesBtn').onclick = () => { renderRoleDlg(); $('#roleDlg').showModal(); };
+$('#roleNew').onclick = () => { const name = prompt('New role name'); if (name) socket.emit('role:create', { serverId: curServer.id, name }, errToast); };
+$('#roleSave').onclick = () => {
+  const bits = [...$('#rolePerms').querySelectorAll('input')].reduce((a, c) => a | (c.checked ? Number(c.dataset.bit) : 0), 0);
+  socket.emit('role:update', {
+    roleId: roleSel, name: $('#roleName').value, color: $('#roleNoColor').checked ? null : $('#roleColor').value,
+    hoist: $('#roleHoist').checked, permissions: bits,
+  }, (res) => { errToast(res); if (res && res.ok) toast('Role saved.'); });
+};
+$('#roleDel').onclick = () => { if (confirm('Delete this role?')) socket.emit('role:delete', { roleId: roleSel }, errToast); };
+$('#roleClose').onclick = () => $('#roleDlg').close();
+
+function openMemDlg(uid) {
+  const m = curServer.members.get(uid); if (!m) return;
+  $('#memTitle').textContent = m.username;
+  const box = $('#memRoles'); box.textContent = '';
+  const canAssign = hasPerm(P.MANAGE_ROLES);
+  for (const r of (curServer.roles || []).filter((x) => !x.is_everyone)) {
+    const l = el('label', 'row'), c = document.createElement('input');
+    c.type = 'checkbox'; c.checked = (m.roles || []).includes(r.id); c.disabled = !canAssign || r.position >= curServer.top;
+    c.onchange = () => socket.emit('role:assign', { serverId: curServer.id, userId: uid, roleId: r.id, enabled: c.checked }, errToast);
+    const n = el('span', 'n', r.name); if (r.color) n.style.color = r.color;
+    l.append(c, n); box.append(l);
+  }
+  if (!box.children.length) box.append(el('p', '', 'This server has no roles yet.'));
+  $('#memKick').hidden = !hasPerm(P.KICK) || uid === curServer.owner_id;
+  $('#memKick').onclick = () => {
+    if (!confirm('Remove ' + m.username + ' from the server?')) return;
+    socket.emit('member:kick', { serverId: curServer.id, userId: uid }, errToast); $('#memDlg').close();
+  };
+  if (!$('#memDlg').open) $('#memDlg').showModal();
+}
+$('#memClose').onclick = () => $('#memDlg').close();
+
+function openOvDlg(cid) {
+  ovChannel = cid;
+  const sel = $('#ovTarget'); sel.textContent = '';
+  for (const r of curServer.roles || []) sel.append(new Option(r.is_everyone ? '@everyone' : 'Role: ' + r.name, 'role:' + r.id));
+  for (const m of curServer.members.values()) sel.append(new Option('Member: ' + m.username, 'member:' + m.id));
+  renderOv();
+  if (!$('#ovDlg').open) $('#ovDlg').showModal();
+}
+function renderOv() {
+  const [t, id] = $('#ovTarget').value.split(':');
+  const o = (curServer.overrides || []).find((x) => x.channel_id === ovChannel && x.target_type === t && x.target_id === Number(id)) || { allow: 0, deny: 0 };
+  const box = $('#ovPerms'); box.textContent = '';
+  for (const [k, lab] of OV_PERMS) {
+    const row = el('div', 'row'), s = document.createElement('select'); s.dataset.bit = P[k];
+    s.append(new Option('Inherit', 'i'), new Option('Allow', 'a'), new Option('Deny', 'd'));
+    s.value = o.allow & P[k] ? 'a' : o.deny & P[k] ? 'd' : 'i';
+    row.append(el('span', 'n', lab), s); box.append(row);
+  }
+}
+$('#ovTarget').onchange = renderOv;
+$('#ovSave').onclick = () => {
+  let allow = 0, deny = 0;
+  for (const s of $('#ovPerms').querySelectorAll('select')) { const b = Number(s.dataset.bit); if (s.value === 'a') allow |= b; else if (s.value === 'd') deny |= b; }
+  const [t, id] = $('#ovTarget').value.split(':');
+  socket.emit('channel:override', { channelId: ovChannel, targetType: t, targetId: Number(id), allow, deny }, (res) => { errToast(res); if (res && res.ok) toast('Permissions saved.'); });
+};
+$('#ovClose').onclick = () => $('#ovDlg').close();
 
 start();
 </script>
