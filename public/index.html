@@ -1,515 +1,964 @@
-require('dotenv').config();
-const path = require('path');
-const http = require('http');
-const express = require('express');
-const { Server } = require('socket.io');
-const { Pool } = require('pg');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Huddle</title>
+<style>
+:root{--bg:#313338;--side:#2b2d31;--dark:#1e1f22;--input:#383a40;--hover:#35373c;--text:#dbdee1;--muted:#949ba4;--accent:#5865f2;--accent-h:#4752c4;--green:#23a55a;--grey:#80848e;--red:#da373c;color-scheme:dark}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font:15px/1.4 "gg sans","Segoe UI",system-ui,-apple-system,Roboto,sans-serif}
+[hidden]{display:none!important}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer;border:0;border-radius:4px;padding:8px 14px;background:var(--accent);color:#fff;font-weight:600}
+button:hover{background:var(--accent-h)}
+button:disabled{opacity:.55;cursor:default}
+button.ghost{background:transparent;color:var(--muted);padding:6px 8px}
+button.ghost:hover{background:var(--hover);color:var(--text)}
+button.sm{padding:4px 9px;font-size:13px}
+button.deny{background:#4e5058}
+button.deny:hover{background:#5d5f68}
+input{background:var(--dark);border:1px solid transparent;border-radius:4px;padding:10px;width:100%;outline:none}
+:focus-visible{outline:2px solid #8ea1ff;outline-offset:1px}
+.auth{min-height:100%;display:grid;place-items:center;padding:16px;background:var(--dark)}
+.card{width:100%;max-width:400px;background:var(--bg);padding:28px;border-radius:8px;display:flex;flex-direction:column;gap:14px}
+.card h1{font-size:24px}
+.card p.sub{color:var(--muted)}
+.tabs{display:flex;gap:6px}
+.tabs button{flex:1;background:var(--input)}
+.tabs button.on{background:var(--accent)}
+.card label{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600;color:var(--muted)}
+.card input{background:var(--dark);font-weight:400;color:var(--text)}
+.err{color:#ff8587;min-height:1.2em;font-size:14px}
+#app{display:flex;height:100dvh}
+#side{width:300px;flex:none;background:var(--side);display:flex;flex-direction:column}
+.me{display:flex;align-items:center;gap:10px;padding:12px;background:#232428}
+.me b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scroll{flex:1;overflow-y:auto;padding:8px}
+.scroll h3{font-size:13px;font-weight:600;color:var(--muted);padding:14px 8px 6px;display:flex;gap:6px;align-items:center}
+.scroll input{margin:0 0 4px}
+ul{list-style:none;padding:0}
+.row{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:4px}
+.row.click{cursor:pointer}
+.row.click:hover,.row.sel{background:var(--hover)}
+.row .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .hint{font-size:13px;color:var(--muted)}
+.av{position:relative;width:32px;height:32px;border-radius:50%;display:grid;place-items:center;font-weight:700;color:#fff;flex:none;user-select:none}
+.dot{position:absolute;right:-3px;bottom:-3px;width:13px;height:13px;border-radius:50%;background:var(--grey);border:3px solid var(--side)}
+.dot.on{background:var(--green)}
+.badge{background:var(--red);color:#fff;border-radius:10px;font-size:12px;padding:0 6px;font-weight:700;line-height:18px}
+.empty{color:var(--muted);font-size:14px;padding:6px 8px}
+#chat{flex:1;display:flex;min-width:0}
+.hero{flex:1;display:grid;place-items:center;color:var(--muted);padding:24px;text-align:center}
+#pane{display:flex;flex-direction:column;flex:1;min-width:0}
+.ch{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid #26272b}
+.ch .st{font-size:13px;color:var(--muted)}
+.ch b{display:block;line-height:1.2}
+#back{display:none}
+#msgs{flex:1;overflow-y:auto;padding:12px 0}
+.msg{display:flex;gap:14px;padding:2px 16px}
+.msg:not(.grouped){margin-top:14px}
+.msg:hover{background:#2e3035}
+.msg .av{width:40px;height:40px}
+.gt{width:40px;flex:none;font-size:10px;color:var(--muted);visibility:hidden;text-align:center;padding-top:4px}
+.msg:hover .gt{visibility:visible}
+.mb{min-width:0}
+.mh time{font-size:12px;color:var(--muted);margin-left:8px}
+.mc{white-space:pre-wrap;overflow-wrap:anywhere}
+#typing{height:22px;padding:0 16px;font-size:13px;color:var(--muted);font-style:italic}
+.comp{display:flex;gap:8px;padding:0 16px 16px}
+.comp input{background:var(--input);padding:12px}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--dark);border:1px solid #3f4147;padding:10px 16px;border-radius:6px;z-index:10;max-width:90vw}
+#rail{width:68px;flex:none;background:var(--dark);display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 0;overflow-y:auto}
+#srvList{display:flex;flex-direction:column;gap:8px}
+.rb{width:46px;height:46px;border-radius:50%;padding:0;font-size:17px;background:var(--side);color:var(--text);display:grid;place-items:center}
+.rb:hover,.rb.on{border-radius:14px;background:var(--accent);color:#fff}
+.rb.add{color:var(--green);font-size:24px}
+.rb.add:hover{background:var(--green);color:#fff}
+.srvhead{display:flex;align-items:center;gap:4px;padding:8px}
+.srvhead b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+dialog{background:var(--bg);color:var(--text);border:0;border-radius:8px;padding:24px;width:min(380px,92vw);margin:auto}
+dialog::backdrop{background:rgba(0,0,0,.7)}
+dialog form{display:flex;flex-direction:column;gap:10px}
+dialog h2{font-size:18px}
+dialog p{color:var(--muted);font-size:14px}
+.av img{position:absolute;inset:0;width:100%;height:100%;border-radius:inherit;object-fit:cover}
+.me .av{cursor:pointer}
+.pfp-prev{width:96px;height:96px;font-size:40px;align-self:center}
+.msg{position:relative}
+.msg.mentioned{background:rgba(250,168,26,.1);box-shadow:inset 3px 0 0 #faa81a}
+.msg.flash{background:rgba(88,101,242,.25)}
+.sys{padding:6px 16px;color:var(--muted);font-size:13px}
+.acts{display:none;position:absolute;right:16px;top:-14px;background:var(--side);border:1px solid #3f4147;border-radius:6px;padding:2px;gap:2px;z-index:2}
+.msg:hover .acts,.msg.open .acts,.msg:focus-within .acts{display:flex}
+.acts button{background:transparent;color:var(--text);padding:4px 6px;font-size:14px}
+.acts button:hover{background:var(--hover)}
+.rep{display:block;background:none;color:var(--muted);padding:0 0 2px;font-weight:400;font-size:13px;text-align:left;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rep:hover{background:none;color:var(--text)}
+.rx{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.chip{background:var(--input);color:var(--text);padding:2px 8px;border:1px solid transparent;font-weight:500;font-size:13px}
+.chip:hover{background:var(--hover)}
+.chip.mine{border-color:var(--accent);background:rgba(88,101,242,.25)}
+.mc code{background:var(--dark);padding:1px 4px;border-radius:3px;font-family:Consolas,monospace;font-size:.9em}
+.mc pre{background:var(--dark);padding:8px;border-radius:4px;overflow-x:auto;margin:4px 0;white-space:pre}
+.mc pre code{padding:0;background:none}
+.mc blockquote{border-left:4px solid #4e5058;padding-left:10px;color:#b5bac1}
+.mc a{color:#00a8fc}
+.spoiler{background:#1e1f22;color:transparent;border-radius:3px;cursor:pointer;padding:0 2px}
+.spoiler.shown{background:#2e3035;color:inherit}
+.mention{background:rgba(88,101,242,.3);color:#c9cdfb;border-radius:3px;padding:0 2px;font-weight:500}
+.chanlink{cursor:pointer}
+.edited{font-size:11px;color:var(--muted)}
+.pin{padding:8px 0;border-bottom:1px solid #3f4147}
+#replyBar{display:flex;align-items:center;gap:8px;padding:6px 16px;background:var(--side);font-size:13px;color:var(--muted)}
+#replyBar span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#pane{position:relative}
+#jump{position:absolute;right:24px;bottom:96px;z-index:3;border-radius:16px}
+.picker{position:fixed;display:flex;gap:2px;background:var(--side);border:1px solid #3f4147;border-radius:6px;padding:4px;z-index:20}
+.picker button{background:transparent;font-size:20px;padding:4px 6px}
+.picker button:hover{background:var(--hover)}
+#ac{position:absolute;left:16px;bottom:70px;background:var(--side);border:1px solid #3f4147;border-radius:6px;min-width:200px;max-width:70%;z-index:5;overflow:hidden}
+#ac button{display:block;width:100%;text-align:left;background:transparent;color:var(--text);border-radius:0;font-weight:500}
+#ac button.on,#ac button:hover{background:var(--hover)}
+.row.unread .n{font-weight:700;color:#fff}
+.ch #pinsBtn{margin-left:auto}
+@media(max-width:700px){
+  #side{flex:1;width:auto}
+  #app.chat-open #side,#app.chat-open #rail{display:none}
+  #app:not(.chat-open) #chat{display:none}
+  #back{display:inline-block}
+}
+@media(prefers-reduced-motion:no-preference){button{transition:background .12s}}
+</style>
+</head>
+<body>
 
-const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET;
-const DATABASE_URL = process.env.DATABASE_URL;
-if (!DATABASE_URL) { console.error('Missing DATABASE_URL environment variable.'); process.exit(1); }
-if (!JWT_SECRET) { console.error('Missing JWT_SECRET environment variable.'); process.exit(1); }
+<div id="auth" class="auth" hidden>
+  <form class="card" id="authForm" autocomplete="on">
+    <h1>Huddle</h1>
+    <p class="sub">Chat with your friends in real time.</p>
+    <div class="tabs">
+      <button type="button" id="tabLogin" class="on">Sign in</button>
+      <button type="button" id="tabRegister">Create account</button>
+    </div>
+    <label>Username
+      <input id="username" autocomplete="username" maxlength="20" required autocapitalize="none" spellcheck="false">
+    </label>
+    <label>Password
+      <input id="password" type="password" autocomplete="current-password" maxlength="72" required>
+    </label>
+    <div class="err" id="authErr" role="alert"></div>
+    <button type="submit" id="authSubmit">Sign in</button>
+  </form>
+</div>
 
-// ---------- Database ----------
-const dbUrl = new URL(DATABASE_URL);
-const isLocal = ['localhost', '127.0.0.1'].includes(dbUrl.hostname);
-dbUrl.searchParams.delete('sslmode');
-dbUrl.searchParams.delete('channel_binding');
-const pool = new Pool({
-  connectionString: dbUrl.toString(),
-  ssl: isLocal ? false : { rejectUnauthorized: false },
+<div id="app" hidden>
+  <nav id="rail" aria-label="Servers">
+    <button class="rb on" id="homeBtn" title="Direct messages" aria-label="Direct messages">DM</button>
+    <div id="srvList"></div>
+    <button class="rb add" id="addSrv" title="Create or join a server" aria-label="Create or join a server">+</button>
+  </nav>
+  <aside id="side">
+    <div class="me">
+      <div class="av" id="meAv"></div>
+      <b id="meName"></b>
+      <button class="ghost" id="logout">Log out</button>
+    </div>
+    <div class="scroll" id="dmScroll">
+      <h3>Find friends</h3>
+      <input id="search" placeholder="Search by username" autocomplete="off" autocapitalize="none" spellcheck="false">
+      <ul id="results"></ul>
+
+      <div id="reqSec" hidden>
+        <h3>Pending requests <span class="badge" id="reqCount"></span></h3>
+        <ul id="reqs"></ul>
+      </div>
+
+      <h3>Friends</h3>
+      <ul id="friends"></ul>
+      <p class="empty" id="noFriends" hidden>No friends yet. Search for a username above to send a request.</p>
+    </div>
+    <div class="scroll" id="srvScroll" hidden>
+      <div class="srvhead">
+        <b id="srvName"></b>
+        <button class="ghost sm" id="invite">Invite</button>
+        <button class="ghost sm" id="leaveSrv">Leave</button>
+      </div>
+      <h3>Channels <button class="ghost sm" id="addCh" hidden>Add</button></h3>
+      <ul id="channels"></ul>
+      <h3>Members</h3>
+      <ul id="members"></ul>
+    </div>
+  </aside>
+
+  <main id="chat">
+    <div class="hero" id="hero"><p>Select a friend to open your conversation.</p></div>
+    <section id="pane" hidden>
+      <div class="ch">
+        <button class="ghost" id="back" aria-label="Back to friends">&larr; Back</button>
+        <div class="av" id="chAv"></div>
+        <div><b id="chName"></b><span class="st" id="chStatus"></span></div>
+        <button class="ghost sm" id="pinsBtn" hidden>Pins</button>
+      </div>
+      <button id="jump" hidden>Jump to latest ↓</button>
+      <div id="msgs" aria-live="polite"></div>
+      <div id="typing"></div>
+      <div id="ac" hidden></div>
+      <div id="replyBar" hidden></div>
+      <form class="comp" id="composer">
+        <input id="text" placeholder="Write a message" autocomplete="off" maxlength="2000">
+        <button type="submit">Send</button>
+      </form>
+    </section>
+  </main>
+</div>
+
+<dialog id="pinDlg" style="width:min(520px,92vw)">
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <h2>Pinned messages</h2>
+    <div id="pinList"></div>
+    <button class="ghost" id="pinClose">Close</button>
+  </div>
+</dialog>
+
+<dialog id="pfpDlg">
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <h2>Profile picture</h2>
+    <div class="av pfp-prev" id="pfpPrev"></div>
+    <p>Choose a photo. It is cropped to a square and shown next to your messages.</p>
+    <input type="file" id="pfpFile" accept="image/*" hidden>
+    <button id="pfpChoose">Choose image</button>
+    <button class="deny" id="pfpRemove">Remove picture</button>
+    <button class="ghost" id="pfpClose">Close</button>
+  </div>
+</dialog>
+
+<dialog id="dlg">
+  <form id="createForm">
+    <h2>Create a server</h2>
+    <input id="srvNameIn" placeholder="Server name" maxlength="30" required>
+    <button type="submit">Create server</button>
+  </form>
+  <hr style="border:0;border-top:1px solid #3f4147;margin:16px 0">
+  <form id="joinForm">
+    <h2>Join a server</h2>
+    <p>Paste the invite code a friend shared with you.</p>
+    <input id="codeIn" placeholder="Invite code" maxlength="16" required autocapitalize="none" spellcheck="false">
+    <button type="submit">Join server</button>
+  </form>
+  <button class="ghost" id="dlgClose" style="margin-top:10px">Cancel</button>
+</dialog>
+
+<div id="toast" hidden role="status"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+
+let token = localStorage.getItem('token');
+let me = null, socket = null, active = null, mode = 'login';
+let friends = new Map(), requests = [], typingFrom = {}, typingTimers = {};
+let servers = new Map(), curServer = null, activeChannel = null;
+let chMsgs = [], chMore = false, loadingOlder = false, ctx = null, typingSent = null, chTyping = {};
+const errToast = (res) => { if (res && res.error) toast(res.error); };
+let lastMsg = null, iAmTyping = false, typingOff = null, toastTimer = null, searchTimer = null;
+
+// ---------- helpers ----------
+const COLORS = ['#5865f2', '#3ba55d', '#eb459e', '#faa81a', '#ed4245', '#1abc9c', '#9b59b6'];
+function avatar(name, status, uid, av) {
+  const a = el('div', 'av', name.charAt(0).toUpperCase());
+  let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  a.style.background = COLORS[h % COLORS.length];
+  if (uid && av) {
+    const img = el('img'); img.src = '/avatar/' + uid + '?v=' + av; img.alt = ''; img.loading = 'lazy';
+    img.onerror = () => img.remove();
+    a.append(img);
+  }
+  if (status !== undefined) a.append(el('span', 'dot' + (status ? ' on' : '')));
+  return a;
+}
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 3500);
+}
+function fmtTime(d) { return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+function fmt(d) {
+  return d.toDateString() === new Date().toDateString()
+    ? 'Today at ' + fmtTime(d)
+    : d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + fmtTime(d);
+}
+async function api(path, opts = {}) {
+  const r = await fetch(path, {
+    method: opts.method || 'GET',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.status === 401 && me) logout();
+  if (!r.ok) throw new Error(d.error || 'Something went wrong. Please try again.');
+  return d;
+}
+
+// ---------- auth ----------
+function setMode(m) {
+  mode = m;
+  $('#tabLogin').classList.toggle('on', m === 'login');
+  $('#tabRegister').classList.toggle('on', m === 'register');
+  $('#authSubmit').textContent = m === 'login' ? 'Sign in' : 'Create account';
+  $('#password').autocomplete = m === 'login' ? 'current-password' : 'new-password';
+  $('#authErr').textContent = '';
+}
+$('#tabLogin').onclick = () => setMode('login');
+$('#tabRegister').onclick = () => setMode('register');
+
+$('#authForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = $('#authSubmit'); btn.disabled = true; $('#authErr').textContent = '';
+  try {
+    const d = await api(mode === 'login' ? '/api/login' : '/api/register', {
+      method: 'POST', body: { username: $('#username').value.trim(), password: $('#password').value },
+    });
+    token = d.token; localStorage.setItem('token', token);
+    $('#password').value = '';
+    await start();
+  } catch (err) { $('#authErr').textContent = err.message; }
+  btn.disabled = false;
 });
 
-async function initDb() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      username VARCHAR(20) NOT NULL,
-      password_hash TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (LOWER(username));
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar BYTEA;
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_v INT NOT NULL DEFAULT 0;
-    CREATE TABLE IF NOT EXISTS friendships (
-      id SERIAL PRIMARY KEY,
-      requester_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      addressee_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      status VARCHAR(10) NOT NULL DEFAULT 'pending',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (requester_id, addressee_id)
-    );
-    CREATE TABLE IF NOT EXISTS messages (
-      id SERIAL PRIMARY KEY,
-      sender_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      receiver_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      content TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS messages_pair_idx ON messages (sender_id, receiver_id, id);
-    CREATE TABLE IF NOT EXISTS servers (
-      id SERIAL PRIMARY KEY,
-      name VARCHAR(30) NOT NULL,
-      owner_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      invite_code VARCHAR(16) NOT NULL UNIQUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS server_members (
-      server_id INT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
-      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (server_id, user_id)
-    );
-    CREATE TABLE IF NOT EXISTS channels (
-      id SERIAL PRIMARY KEY,
-      server_id INT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
-      name VARCHAR(30) NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (server_id, name)
-    );
-    CREATE TABLE IF NOT EXISTS channel_messages (
-      id SERIAL PRIMARY KEY,
-      channel_id INT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-      sender_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      content TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS channel_messages_idx ON channel_messages (channel_id, id);
-    ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
-    ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS reply_to INT;
-    ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;
-    ALTER TABLE channel_messages ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT FALSE;
-    CREATE TABLE IF NOT EXISTS message_reactions (
-      message_id INT NOT NULL REFERENCES channel_messages(id) ON DELETE CASCADE,
-      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      emoji VARCHAR(16) NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (message_id, user_id, emoji)
-    );
-  `);
-  console.log('Database ready.');
+function showAuth() { $('#app').hidden = true; $('#auth').hidden = false; }
+
+function logout() {
+  localStorage.removeItem('token');
+  token = null; me = null; active = null; friends = new Map(); requests = []; typingFrom = {};
+  servers = new Map(); curServer = null; activeChannel = null;
+  $('#dmScroll').hidden = false; $('#srvScroll').hidden = true; $('#srvList').textContent = '';
+  if (socket) { socket.disconnect(); socket = null; }
+  $('#app').classList.remove('chat-open');
+  $('#pane').hidden = true; $('#hero').hidden = false;
+  $('#msgs').textContent = ''; $('#results').textContent = ''; $('#search').value = '';
+  showAuth();
+}
+$('#logout').onclick = logout;
+
+// ---------- startup ----------
+async function start() {
+  if (!token) return showAuth();
+  try { me = (await api('/api/me')).user; } catch { token = null; localStorage.removeItem('token'); return showAuth(); }
+  $('#auth').hidden = true; $('#app').hidden = false;
+  $('#meName').textContent = me.username;
+  renderMe();
+  connectSocket();
 }
 
-// ---------- Helpers ----------
-const sign = (u) => jwt.sign({ id: u.id, username: u.username }, JWT_SECRET, { expiresIn: '7d' });
-const validName = (n) => typeof n === 'string' && /^[A-Za-z0-9_]{3,20}$/.test(n);
-const wrap = (fn) => (req, res) => fn(req, res).catch((e) => { console.error(e); res.status(500).json({ error: 'Server error. Please try again.' }); });
+async function loadLists() {
+  const [f, r] = await Promise.all([api('/api/friends'), api('/api/requests')]);
+  const old = friends;
+  friends = new Map(f.friends.map((x) => [x.id, { ...x, unread: (old.get(x.id) && old.get(x.id).unread) || 0 }]));
+  requests = r.requests;
+  renderFriends(); renderReqs();
+  if (active && friends.has(active)) { updateHeader(); loadHistory(); }
+}
 
-function auth(req, res, next) {
-  try {
-    req.user = jwt.verify((req.headers.authorization || '').replace('Bearer ', ''), JWT_SECRET);
-    next();
-  } catch {
-    res.status(401).json({ error: 'Your session expired. Please sign in again.' });
+function connectSocket() {
+  if (socket) socket.disconnect();
+  socket = io({ auth: { token } });
+  socket.on('connect_error', (e) => { if (e.message === 'auth') logout(); });
+  socket.on('connect', () => { loadLists().catch((e) => toast(e.message)); loadServers().catch((e) => toast(e.message)); });
+
+  socket.on('request:incoming', (r) => {
+    if (!requests.some((x) => x.id === r.id)) requests.push(r);
+    renderReqs(); toast(r.username + ' sent you a friend request.');
+  });
+  socket.on('request:removed', ({ requestId }) => { requests = requests.filter((x) => x.id !== requestId); renderReqs(); });
+  socket.on('friend:added', ({ requestId, friend }) => {
+    requests = requests.filter((x) => x.id !== requestId);
+    friends.set(friend.id, { ...friend, unread: 0 });
+    renderReqs(); renderFriends();
+    toast('You and ' + friend.username + ' are now friends.');
+    if ($('#search').value.trim()) runSearch();
+  });
+  socket.on('presence', ({ userId, online }) => {
+    const sm = curServer && curServer.members.get(userId);
+    if (sm) { sm.online = online; renderMembers(); }
+    const f = friends.get(userId); if (!f) return;
+    f.online = online; renderFriends();
+    if (active === userId) updateHeader();
+  });
+  socket.on('avatar:updated', ({ userId, av }) => {
+    if (userId === me.id) { me.av = av; renderMe(); if ($('#pfpDlg').open) previewPfp(); }
+    const f = friends.get(userId); if (f) { f.av = av; renderFriends(); if (active === userId) updateHeader(); }
+    const sm = curServer && curServer.members.get(userId); if (sm) { sm.av = av; renderMembers(); }
+    requests.forEach((r) => { if (r.userId === userId) r.av = av; }); renderReqs();
+  });
+  socket.on('server:added', ({ server }) => { servers.set(server.id, server); renderRail(); });
+  socket.on('server:removed', ({ serverId, deleted }) => {
+    const s = servers.get(serverId); servers.delete(serverId);
+    if (curServer && curServer.id === serverId) { showHome(); if (deleted) toast((s ? s.name : 'The server') + ' was deleted.'); }
+    renderRail();
+  });
+  socket.on('channel:added', ({ serverId, channel }) => {
+    if (curServer && curServer.id === serverId && !curServer.channels.some((c) => c.id === channel.id)) {
+      curServer.channels.push({ ...channel, unread: 0 }); renderChannels();
+    }
+  });
+  socket.on('member:joined', ({ serverId, member }) => { if (curServer && curServer.id === serverId) { curServer.members.set(member.id, member); renderMembers(); } });
+  socket.on('member:left', ({ serverId, userId }) => { if (curServer && curServer.id === serverId) { curServer.members.delete(userId); renderMembers(); } });
+  socket.on('channel:message', (m) => {
+    if (!curServer || curServer.id !== m.serverId) return;
+    delete chTyping[m.channel_id + ':' + m.sender_id];
+    if (activeChannel === m.channel_id) {
+      const b = $('#msgs'), near = b.scrollHeight - b.scrollTop - b.clientHeight < 150;
+      chMsgs.push(m); renderMsgs(m.sender_id === me.id || near); renderTyping();
+    } else if (m.sender_id !== me.id) {
+      const c = curServer.channels.find((x) => x.id === m.channel_id);
+      if (c) { c.unread++; if (mentionsMe(m.content)) c.mentions = (c.mentions || 0) + 1; renderChannels(); }
+    }
+  });
+  socket.on('message:updated', ({ message }) => {
+    if (activeChannel !== message.channel_id) return;
+    const i = chMsgs.findIndex((x) => x.id === message.id);
+    if (i >= 0) { chMsgs[i] = message; renderMsgs(false); }
+  });
+  socket.on('message:deleted', ({ id, channelId }) => {
+    if (activeChannel !== channelId) return;
+    chMsgs = chMsgs.filter((x) => x.id !== id); renderMsgs(false);
+  });
+  socket.on('channel:typing', ({ channelId, userId, username, isTyping }) => {
+    const k = channelId + ':' + userId; clearTimeout(typingTimers[k]);
+    if (isTyping) { chTyping[k] = { channelId, username }; typingTimers[k] = setTimeout(() => { delete chTyping[k]; renderTyping(); }, 4000); }
+    else delete chTyping[k];
+    renderTyping();
+  });
+  socket.on('typing', ({ from, isTyping }) => {
+    clearTimeout(typingTimers[from]);
+    typingFrom[from] = isTyping;
+    if (isTyping) typingTimers[from] = setTimeout(() => { typingFrom[from] = false; renderTyping(); }, 4000);
+    renderTyping();
+  });
+  socket.on('message', (m) => {
+    const peer = m.sender_id === me.id ? m.receiver_id : m.sender_id;
+    if (m.sender_id !== me.id) { typingFrom[peer] = false; renderTyping(); }
+    if (active === peer) { addMsg(m, true); }
+    else if (m.sender_id !== me.id && friends.has(peer)) { friends.get(peer).unread++; renderFriends(); }
+  });
+}
+
+// ---------- sidebar rendering ----------
+function renderFriends() {
+  const list = $('#friends'); list.textContent = '';
+  const sorted = [...friends.values()].sort((a, b) => b.online - a.online || a.username.localeCompare(b.username));
+  $('#noFriends').hidden = sorted.length > 0;
+  for (const f of sorted) {
+    const li = el('li', 'row click' + (f.id === active ? ' sel' : ''));
+    li.tabIndex = 0;
+    li.append(avatar(f.username, f.online, f.id, f.av), el('span', 'n', f.username));
+    if (f.unread) li.append(el('span', 'badge', f.unread > 99 ? '99+' : String(f.unread)));
+    li.onclick = () => openChat(f.id);
+    li.onkeydown = (e) => { if (e.key === 'Enter') openChat(f.id); };
+    list.append(li);
   }
 }
 
-async function areFriends(a, b) {
-  const { rows } = await pool.query(
-    `SELECT 1 FROM friendships WHERE status='accepted'
-     AND ((requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1))`, [a, b]);
-  return rows.length > 0;
-}
-
-async function friendIds(userId) {
-  const { rows } = await pool.query(
-    `SELECT CASE WHEN requester_id=$1 THEN addressee_id ELSE requester_id END AS id
-     FROM friendships WHERE status='accepted' AND (requester_id=$1 OR addressee_id=$1)`, [userId]);
-  return rows.map((r) => r.id);
-}
-
-// userId -> Set of socket ids (a user can have several tabs/devices)
-const online = new Map();
-const isOnline = (id) => online.has(id);
-const getAv = async (id) => ((await pool.query('SELECT avatar_v FROM users WHERE id=$1', [id])).rows[0] || {}).avatar_v || 0;
-
-// ---------- App ----------
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
-
-app.use(express.json({ limit: '10kb' }));
-app.use(express.static(path.join(__dirname, 'public')));
-
-app.post('/api/register', wrap(async (req, res) => {
-  const { username, password } = req.body || {};
-  if (!validName(username)) return res.status(400).json({ error: 'Username must be 3–20 letters, numbers or underscores.' });
-  if (typeof password !== 'string' || password.length < 6 || password.length > 72)
-    return res.status(400).json({ error: 'Password must be 6–72 characters.' });
-  try {
-    const hash = await bcrypt.hash(password, 10);
-    const { rows } = await pool.query(
-      'INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id, username', [username, hash]);
-    res.json({ token: sign(rows[0]), user: { ...rows[0], av: 0 } });
-  } catch (e) {
-    if (e.code === '23505') return res.status(409).json({ error: 'That username is already taken.' });
-    throw e;
+function renderReqs() {
+  $('#reqSec').hidden = requests.length === 0;
+  $('#reqCount').textContent = requests.length;
+  const list = $('#reqs'); list.textContent = '';
+  for (const r of requests) {
+    const li = el('li', 'row');
+    const yes = el('button', 'sm', 'Accept'), no = el('button', 'sm deny', 'Decline');
+    yes.onclick = () => { yes.disabled = no.disabled = true; socket.emit('friend:accept', { requestId: r.id }, (res) => { if (res && res.error) { toast(res.error); loadLists(); } }); };
+    no.onclick = () => { yes.disabled = no.disabled = true; socket.emit('friend:decline', { requestId: r.id }, (res) => { if (res && res.error) { toast(res.error); loadLists(); } }); };
+    li.append(avatar(r.username, undefined, r.userId, r.av), el('span', 'n', r.username), yes, no);
+    list.append(li);
   }
-}));
-
-app.post('/api/login', wrap(async (req, res) => {
-  const { username, password } = req.body || {};
-  if (typeof username !== 'string' || typeof password !== 'string')
-    return res.status(400).json({ error: 'Enter your username and password.' });
-  const { rows } = await pool.query('SELECT id, username, password_hash, avatar_v FROM users WHERE LOWER(username)=LOWER($1)', [username]);
-  const u = rows[0];
-  if (!u || !(await bcrypt.compare(password, u.password_hash)))
-    return res.status(401).json({ error: 'Incorrect username or password.' });
-  res.json({ token: sign(u), user: { id: u.id, username: u.username, av: u.avatar_v } });
-}));
-
-app.get('/api/me', auth, wrap(async (req, res) => {
-  const { rows } = await pool.query('SELECT id, username, avatar_v AS av FROM users WHERE id=$1', [req.user.id]);
-  if (!rows[0]) return res.status(401).json({ error: 'Your session expired. Please sign in again.' });
-  res.json({ user: rows[0] });
-}));
-
-app.get('/avatar/:id', wrap(async (req, res) => {
-  const { rows } = await pool.query('SELECT avatar FROM users WHERE id=$1', [Number(req.params.id) || 0]);
-  if (!rows[0] || !rows[0].avatar) return res.status(404).end();
-  res.set({ 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
-  res.send(rows[0].avatar);
-}));
-
-app.get('/api/users/search', auth, wrap(async (req, res) => {
-  const q = String(req.query.q || '').trim().slice(0, 20);
-  if (!q) return res.json({ users: [] });
-  const like = '%' + q.replace(/[\\%_]/g, '\\$&') + '%';
-  const { rows } = await pool.query(
-    `SELECT u.id, u.username, u.avatar_v AS av, f.status, f.requester_id
-     FROM users u
-     LEFT JOIN friendships f ON (f.requester_id=u.id AND f.addressee_id=$1) OR (f.requester_id=$1 AND f.addressee_id=u.id)
-     WHERE u.id<>$1 AND u.username ILIKE $2 ORDER BY u.username LIMIT 10`, [req.user.id, like]);
-  res.json({ users: rows });
-}));
-
-app.get('/api/friends', auth, wrap(async (req, res) => {
-  const { rows } = await pool.query(
-    `SELECT u.id, u.username, u.avatar_v AS av FROM friendships f
-     JOIN users u ON u.id = CASE WHEN f.requester_id=$1 THEN f.addressee_id ELSE f.requester_id END
-     WHERE f.status='accepted' AND (f.requester_id=$1 OR f.addressee_id=$1) ORDER BY u.username`, [req.user.id]);
-  res.json({ friends: rows.map((r) => ({ ...r, online: isOnline(r.id) })) });
-}));
-
-app.get('/api/requests', auth, wrap(async (req, res) => {
-  const { rows } = await pool.query(
-    `SELECT f.id, u.id AS "userId", u.username, u.avatar_v AS av FROM friendships f
-     JOIN users u ON u.id=f.requester_id WHERE f.addressee_id=$1 AND f.status='pending' ORDER BY f.created_at`, [req.user.id]);
-  res.json({ requests: rows });
-}));
-
-app.get('/api/messages/:friendId', auth, wrap(async (req, res) => {
-  const other = Number(req.params.friendId);
-  if (!other || !(await areFriends(req.user.id, other))) return res.status(403).json({ error: 'You can only view chats with friends.' });
-  const { rows } = await pool.query(
-    `SELECT * FROM (
-       SELECT id, sender_id, receiver_id, content, created_at FROM messages
-       WHERE (sender_id=$1 AND receiver_id=$2) OR (sender_id=$2 AND receiver_id=$1)
-       ORDER BY id DESC LIMIT 200
-     ) t ORDER BY id ASC`, [req.user.id, other]);
-  res.json({ messages: rows });
-}));
-
-// ---------- Servers ----------
-const MSG_SQL = `SELECT m.id, m.channel_id, m.sender_id, u.username, u.avatar_v AS av, m.content, m.created_at,
-  m.edited_at, m.pinned, m.is_system, m.reply_to, LEFT(r.content, 120) AS reply_content, ru.username AS reply_username
-  FROM channel_messages m JOIN users u ON u.id=m.sender_id
-  LEFT JOIN channel_messages r ON r.id=m.reply_to LEFT JOIN users ru ON ru.id=r.sender_id`;
-
-async function withReactions(rows) {
-  if (!rows.length) return rows;
-  const { rows: rx } = await pool.query(
-    `SELECT r.message_id, r.emoji, array_agg(r.user_id) AS ids, array_agg(u.username) AS names
-     FROM message_reactions r JOIN users u ON u.id=r.user_id WHERE r.message_id = ANY($1)
-     GROUP BY r.message_id, r.emoji ORDER BY MIN(r.created_at)`, [rows.map((m) => m.id)]);
-  for (const m of rows) m.reactions = rx.filter((x) => x.message_id === m.id).map((x) => ({ e: x.emoji, ids: x.ids, names: x.names }));
-  return rows;
 }
-const getMessage = async (id) => (await withReactions((await pool.query(MSG_SQL + ' WHERE m.id=$1', [id])).rows))[0];
-const chServer = async (cid) => ((await pool.query('SELECT server_id FROM channels WHERE id=$1', [cid])).rows[0] || {}).server_id;
 
-app.get('/api/channels/:id/pins', auth, wrap(async (req, res) => {
-  const id = Number(req.params.id);
-  const sid = id && (await chServer(id));
-  if (!sid || !(await isMember(req.user.id, sid))) return res.status(403).json({ error: 'You cannot view this channel.' });
-  const { rows } = await pool.query(MSG_SQL + ' WHERE m.channel_id=$1 AND m.pinned ORDER BY m.id DESC', [id]);
-  res.json({ messages: await withReactions(rows) });
-}));
-const isMember = async (userId, serverId) =>
-  (await pool.query('SELECT 1 FROM server_members WHERE user_id=$1 AND server_id=$2', [userId, serverId])).rowCount > 0;
-
-app.get('/api/servers', auth, wrap(async (req, res) => {
-  const { rows } = await pool.query(
-    `SELECT s.id, s.name, s.owner_id, s.invite_code FROM servers s
-     JOIN server_members m ON m.server_id=s.id WHERE m.user_id=$1 ORDER BY s.created_at`, [req.user.id]);
-  res.json({ servers: rows });
-}));
-
-app.get('/api/servers/:id', auth, wrap(async (req, res) => {
-  const id = Number(req.params.id);
-  if (!id || !(await isMember(req.user.id, id))) return res.status(403).json({ error: 'You are not in that server.' });
-  const [ch, mem] = await Promise.all([
-    pool.query('SELECT id, name FROM channels WHERE server_id=$1 ORDER BY id', [id]),
-    pool.query('SELECT u.id, u.username, u.avatar_v AS av FROM server_members m JOIN users u ON u.id=m.user_id WHERE m.server_id=$1 ORDER BY u.username', [id]),
-  ]);
-  res.json({ channels: ch.rows, members: mem.rows.map((r) => ({ ...r, online: isOnline(r.id) })) });
-}));
-
-app.get('/api/channels/:id/messages', auth, wrap(async (req, res) => {
-  const id = Number(req.params.id);
-  const c = id && (await pool.query('SELECT server_id FROM channels WHERE id=$1', [id])).rows[0];
-  if (!c || !(await isMember(req.user.id, c.server_id))) return res.status(403).json({ error: 'You cannot view this channel.' });
-  const before = Number(req.query.before) || 2147483647;
-  const { rows } = await pool.query(
-    `SELECT * FROM (${MSG_SQL} WHERE m.channel_id=$1 AND m.id<$2 ORDER BY m.id DESC LIMIT 50) t ORDER BY id ASC`, [id, before]);
-  res.json({ messages: await withReactions(rows), more: rows.length === 50 });
-}));
-
-// ---------- Socket.IO ----------
-io.use(async (socket, next) => {
+// ---------- find friends ----------
+async function runSearch() {
+  const q = $('#search').value.trim(), list = $('#results');
+  if (!q) { list.textContent = ''; return; }
   try {
-    socket.user = jwt.verify(socket.handshake.auth && socket.handshake.auth.token, JWT_SECRET);
-  } catch {
-    return next(new Error('auth'));
+    const { users } = await api('/api/users/search?q=' + encodeURIComponent(q));
+    if ($('#search').value.trim() !== q) return;
+    list.textContent = '';
+    if (!users.length) { list.append(el('li', 'empty', 'No users found.')); return; }
+    for (const u of users) {
+      const li = el('li', 'row');
+      li.append(avatar(u.username, undefined, u.id, u.av), el('span', 'n', u.username));
+      if (u.status === 'accepted') li.append(el('span', 'hint', 'Friends'));
+      else if (u.status === 'pending') li.append(el('span', 'hint', u.requester_id === me.id ? 'Requested' : 'Wants to add you'));
+      else {
+        const b = el('button', 'sm', 'Add friend');
+        b.onclick = () => {
+          b.disabled = true;
+          socket.emit('friend:request', { userId: u.id }, (res) => {
+            if (res && res.error) { toast(res.error); b.disabled = false; }
+            else b.replaceWith(el('span', 'hint', 'Requested'));
+          });
+        };
+        li.append(b);
+      }
+      list.append(li);
+    }
+  } catch (e) { toast(e.message); }
+}
+$('#search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 250); });
+
+// ---------- chat ----------
+function updateHeader() {
+  const f = friends.get(active); if (!f) return;
+  const av = avatar(f.username, f.online, f.id, f.av);
+  $('#chAv').replaceWith(Object.assign(av, { id: 'chAv' }));
+  $('#chName').textContent = f.username; $('#pinsBtn').hidden = true;
+  $('#chStatus').textContent = f.online ? 'Online' : 'Offline';
+  renderTyping();
+}
+
+function renderTyping() {
+  let txt = '';
+  if (activeChannel) {
+    const n = Object.values(chTyping).filter((x) => x.channelId === activeChannel).map((x) => x.username);
+    txt = n.length === 1 ? n[0] + ' is typing...' : n.length === 2 ? n[0] + ' and ' + n[1] + ' are typing...' : n.length ? 'Several people are typing...' : '';
+  } else {
+    const f = friends.get(active);
+    if (f && typingFrom[active]) txt = f.username + ' is typing...';
   }
+  $('#typing').textContent = txt;
+}
+
+function stopTyping() {
+  clearTimeout(typingOff);
+  if (iAmTyping && typingSent && socket) socket.emit(typingSent[0], { ...typingSent[1], isTyping: false });
+  iAmTyping = false;
+}
+
+function openChat(id) {
+  stopTyping(); clearCtx();
+  active = id;
+  friends.get(id).unread = 0;
+  renderFriends();
+  $('#hero').hidden = true; $('#pane').hidden = false;
+  $('#app').classList.add('chat-open');
+  updateHeader();
+  loadHistory().then(() => { if (window.innerWidth > 700) $('#text').focus(); });
+}
+
+$('#back').onclick = () => {
+  stopTyping(); active = null; activeChannel = null; if (curServer) renderChannels();
+  $('#app').classList.remove('chat-open');
+  $('#pane').hidden = true; $('#hero').hidden = false;
+  renderFriends();
+};
+
+async function loadHistory() {
+  const id = active;
   try {
-    const { rows } = await pool.query('SELECT server_id FROM server_members WHERE user_id=$1', [socket.user.id]);
-    if (rows.length) socket.join(rows.map((r) => 's:' + r.server_id));
-  } catch (e) { console.error('join rooms', e); }
-  next();
+    const { messages } = await api('/api/messages/' + id);
+    if (id !== active) return;
+    $('#msgs').textContent = ''; lastMsg = null;
+    messages.forEach((m) => addMsg(m, false));
+    $('#msgs').scrollTop = $('#msgs').scrollHeight;
+  } catch (e) { toast(e.message); }
+}
+
+function addMsg(m, scroll) {
+  const box = $('#msgs');
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 150;
+  const mine = m.sender_id === me.id;
+  const name = mine ? me.username : (m.username || friends.get(active).username);
+  const t = new Date(m.created_at);
+  const grouped = lastMsg && lastMsg.s === m.sender_id && t - lastMsg.t < 300000;
+  const row = el('div', 'msg' + (grouped ? ' grouped' : ''));
+  const pic = mine ? me.av : (m.av !== undefined ? m.av : (friends.get(m.sender_id) || {}).av);
+  row.append(grouped ? el('span', 'gt', fmtTime(t)) : avatar(name, undefined, m.sender_id, pic));
+  const body = el('div', 'mb');
+  if (!grouped) {
+    const head = el('div', 'mh');
+    head.append(el('b', '', name), el('time', '', fmt(t)));
+    body.append(head);
+  }
+  const mc = el('div', 'mc'); renderContent(m.content, mc); body.append(mc);
+  row.append(body);
+  box.append(row);
+  lastMsg = { s: m.sender_id, t };
+  if (scroll && (mine || nearBottom)) box.scrollTop = box.scrollHeight;
+}
+
+$('#text').addEventListener('input', () => {
+  if (!active && !activeChannel) return;
+  if (!iAmTyping) {
+    iAmTyping = true;
+    typingSent = activeChannel ? ['channel:typing', { channelId: activeChannel }] : ['typing', { to: active }];
+    socket.emit(typingSent[0], { ...typingSent[1], isTyping: true });
+  }
+  clearTimeout(typingOff); typingOff = setTimeout(stopTyping, 1500);
 });
 
-async function broadcastToRelated(userId, event, payload) {
-  for (const id of await friendIds(userId)) io.to('u:' + id).emit(event, payload);
-  const { rows } = await pool.query('SELECT server_id FROM server_members WHERE user_id=$1', [userId]);
-  for (const r of rows) io.to('s:' + r.server_id).emit(event, payload);
+$('#composer').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const input = $('#text'), content = input.value.trim();
+  if (!content || (!active && !activeChannel)) return;
+  let ev = activeChannel ? 'channel:message' : 'message:send';
+  let payload = activeChannel ? { channelId: activeChannel, content } : { to: active, content };
+  if (activeChannel && ctx) {
+    if (ctx.type === 'edit') { ev = 'message:edit'; payload = { id: ctx.m.id, content }; }
+    else payload.replyTo = ctx.m.id;
+  }
+  socket.emit(ev, payload, (res) => {
+    if (res && res.error) { toast(res.error); input.value = content; }
+  });
+  input.value = ''; stopTyping(); clearCtx();
+});
+
+// ---------- servers ----------
+async function loadServers() {
+  servers = new Map((await api('/api/servers')).servers.map((s) => [s.id, s]));
+  renderRail();
+  if (curServer) {
+    if (!servers.has(curServer.id)) showHome();
+    else if (activeChannel) loadChannelHistory();
+  }
 }
-const broadcastPresence = (userId, isOn) => broadcastToRelated(userId, 'presence', { userId, online: isOn });
 
-io.on('connection', (socket) => {
-  const me = socket.user.id;
-  const myName = socket.user.username;
-  const reply = (cb, obj) => { if (typeof cb === 'function') cb(obj); };
-  const on = (event, fn) => socket.on(event, async (data, cb) => {
-    try { reply(cb, (await fn(data || {})) || { ok: true }); }
-    catch (e) { console.error(event, e); reply(cb, { error: 'Server error. Please try again.' }); }
+function renderRail() {
+  $('#homeBtn').classList.toggle('on', !curServer);
+  const list = $('#srvList'); list.textContent = '';
+  for (const s of servers.values()) {
+    const b = el('button', 'rb' + (curServer && curServer.id === s.id ? ' on' : ''), s.name.charAt(0).toUpperCase());
+    b.title = s.name; b.setAttribute('aria-label', s.name);
+    b.onclick = () => selectServer(s.id).catch((err) => toast(err.message));
+    list.append(b);
+  }
+}
+
+function showHome() {
+  stopTyping(); clearCtx();
+  curServer = null; activeChannel = null; active = null;
+  $('#dmScroll').hidden = false; $('#srvScroll').hidden = true;
+  $('#app').classList.remove('chat-open');
+  $('#pane').hidden = true; $('#hero').hidden = false;
+  renderRail(); renderFriends();
+}
+
+async function selectServer(id) {
+  if (!servers.has(id)) await loadServers();
+  const d = await api('/api/servers/' + id);
+  stopTyping(); active = null; activeChannel = null;
+  curServer = { ...servers.get(id), channels: d.channels.map((c) => ({ ...c, unread: 0, mentions: 0 })), members: new Map(d.members.map((m) => [m.id, m])) };
+  $('#dmScroll').hidden = true; $('#srvScroll').hidden = false;
+  $('#pane').hidden = true; $('#hero').hidden = false;
+  $('#app').classList.remove('chat-open');
+  $('#srvName').textContent = curServer.name;
+  const owner = curServer.owner_id === me.id;
+  $('#addCh').hidden = !owner;
+  $('#leaveSrv').textContent = owner ? 'Delete' : 'Leave';
+  renderRail(); renderChannels(); renderMembers();
+  if (window.innerWidth > 700 && curServer.channels[0]) openChannel(curServer.channels[0].id);
+}
+
+function renderChannels() {
+  if (!curServer) return;
+  const list = $('#channels'); list.textContent = '';
+  for (const c of curServer.channels) {
+    const li = el('li', 'row click' + (c.id === activeChannel ? ' sel' : '') + (c.unread ? ' unread' : ''));
+    li.tabIndex = 0;
+    li.append(el('span', 'hint', '#'), el('span', 'n', c.name));
+    if (c.mentions) li.append(el('span', 'badge', String(c.mentions)));
+    li.onclick = () => openChannel(c.id);
+    li.onkeydown = (e) => { if (e.key === 'Enter') openChannel(c.id); };
+    list.append(li);
+  }
+}
+
+function renderMembers() {
+  const list = $('#members'); list.textContent = '';
+  const sorted = [...curServer.members.values()].sort((a, b) => b.online - a.online || a.username.localeCompare(b.username));
+  for (const m of sorted) {
+    const li = el('li', 'row');
+    li.append(avatar(m.username, m.online, m.id, m.av), el('span', 'n', m.username + (m.id === curServer.owner_id ? ' (owner)' : '')));
+    list.append(li);
+  }
+}
+
+function openChannel(id) {
+  const c = curServer.channels.find((x) => x.id === id); if (!c) return;
+  stopTyping(); clearCtx(); acClose(); active = null; activeChannel = id; c.unread = 0; c.mentions = 0; chMsgs = []; chMore = false;
+  $('#msgs').textContent = ''; renderChannels();
+  $('#hero').hidden = true; $('#pane').hidden = false;
+  $('#app').classList.add('chat-open');
+  const av = el('div', 'av', '#'); av.id = 'chAv'; av.style.background = '#4e5058';
+  $('#chAv').replaceWith(av);
+  $('#chName').textContent = c.name; $('#pinsBtn').hidden = false;
+  $('#chStatus').textContent = curServer.name;
+  $('#typing').textContent = '';
+  loadChannelHistory().then(() => { if (window.innerWidth > 700) $('#text').focus(); });
+}
+
+async function loadChannelHistory() {
+  const id = activeChannel;
+  try {
+    const d = await api('/api/channels/' + id + '/messages');
+    if (id !== activeChannel) return;
+    chMsgs = d.messages; chMore = d.more; renderMsgs(true);
+  } catch (err) { toast(err.message); }
+}
+
+$('#homeBtn').onclick = showHome;
+$('#addSrv').onclick = () => $('#dlg').showModal();
+$('#dlgClose').onclick = () => $('#dlg').close();
+function srvAction(ev, data, inputId) {
+  socket.emit(ev, data, (res) => {
+    if (res.error) return toast(res.error);
+    $(inputId).value = ''; $('#dlg').close();
+    selectServer(res.serverId).catch((err) => toast(err.message));
   });
+}
+$('#createForm').addEventListener('submit', (e) => { e.preventDefault(); srvAction('server:create', { name: $('#srvNameIn').value }, '#srvNameIn'); });
+$('#joinForm').addEventListener('submit', (e) => { e.preventDefault(); srvAction('server:join', { code: $('#codeIn').value }, '#codeIn'); });
+$('#addCh').onclick = () => {
+  const name = prompt('New channel name'); if (!name) return;
+  socket.emit('channel:create', { serverId: curServer.id, name }, (res) => { if (res.error) toast(res.error); });
+};
+$('#invite').onclick = async () => {
+  const code = curServer.invite_code;
+  try { await navigator.clipboard.writeText(code); toast('Invite code ' + code + ' copied. Friends join with the + button.'); }
+  catch { toast('Invite code: ' + code); }
+};
+$('#leaveSrv').onclick = () => {
+  const owner = curServer.owner_id === me.id;
+  if (!confirm(owner ? 'Delete "' + curServer.name + '" for everyone? This cannot be undone.' : 'Leave "' + curServer.name + '"?')) return;
+  socket.emit('server:leave', { serverId: curServer.id }, (res) => { if (res.error) toast(res.error); });
+};
 
-  socket.join('u:' + me);
-  if (!online.has(me)) online.set(me, new Set());
-  const sockets = online.get(me);
-  sockets.add(socket.id);
-  if (sockets.size === 1) broadcastPresence(me, true).catch(console.error);
-
-  on('friend:request', async ({ userId }) => {
-    userId = Number(userId);
-    if (!userId || userId === me) return { error: 'Invalid user.' };
-    const target = (await pool.query('SELECT id FROM users WHERE id=$1', [userId])).rows[0];
-    if (!target) return { error: 'User not found.' };
-    const ex = (await pool.query(
-      `SELECT * FROM friendships WHERE (requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1)`,
-      [me, userId])).rows[0];
-    if (ex) {
-      if (ex.status === 'accepted') return { error: 'You are already friends.' };
-      return { error: ex.requester_id === me ? 'Request already sent.' : 'They already sent you a request. Check your pending requests.' };
-    }
-    const { rows } = await pool.query(
-      'INSERT INTO friendships (requester_id, addressee_id) VALUES ($1, $2) RETURNING id', [me, userId]);
-    io.to('u:' + userId).emit('request:incoming', { id: rows[0].id, userId: me, username: myName, av: await getAv(me) });
-    return { ok: true };
+// ---------- profile picture ----------
+function renderMe() {
+  const a = avatar(me.username, undefined, me.id, me.av);
+  a.id = 'meAv'; a.title = 'Change profile picture'; a.tabIndex = 0;
+  a.onclick = () => { previewPfp(); $('#pfpDlg').showModal(); };
+  a.onkeydown = (e) => { if (e.key === 'Enter') a.click(); };
+  $('#meAv').replaceWith(a);
+}
+function previewPfp() {
+  const a = avatar(me.username, undefined, me.id, me.av);
+  a.id = 'pfpPrev'; a.classList.add('pfp-prev');
+  $('#pfpPrev').replaceWith(a);
+}
+function toAvatar(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const c = document.createElement('canvas'); c.width = c.height = 128;
+      const ctx = c.getContext('2d'), s = Math.min(img.width, img.height);
+      ctx.fillStyle = '#313338'; ctx.fillRect(0, 0, 128, 128);
+      ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 128, 128);
+      URL.revokeObjectURL(url); resolve(c.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('That file is not a valid image.')); };
+    img.src = url;
   });
+}
+$('#pfpChoose').onclick = () => $('#pfpFile').click();
+$('#pfpClose').onclick = () => $('#pfpDlg').close();
+$('#pfpFile').onchange = async (e) => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  try {
+    const image = await toAvatar(f);
+    socket.emit('avatar:set', { image }, (res) => { if (res.error) toast(res.error); });
+  } catch (err) { toast(err.message); }
+};
+$('#pfpRemove').onclick = () => socket.emit('avatar:set', { image: null }, (res) => { if (res.error) toast(res.error); });
 
-  on('friend:accept', async ({ requestId }) => {
-    const { rows } = await pool.query(
-      `UPDATE friendships SET status='accepted' WHERE id=$1 AND addressee_id=$2 AND status='pending' RETURNING requester_id`,
-      [Number(requestId), me]);
-    if (!rows[0]) return { error: 'That request no longer exists.' };
-    const otherId = rows[0].requester_id;
-    const other = (await pool.query('SELECT id, username, avatar_v AS av FROM users WHERE id=$1', [otherId])).rows[0];
-    io.to('u:' + me).emit('friend:added', { requestId: Number(requestId), friend: { ...other, online: isOnline(otherId) } });
-    io.to('u:' + otherId).emit('friend:added', { requestId: Number(requestId), friend: { id: me, username: myName, online: true, av: await getAv(me) } });
-    return { ok: true };
-  });
+// ---------- message features ----------
+const EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🎉', '👀', '🔥'];
+const mentionsMe = (t) => /@(everyone|here)\b/.test(t) || new RegExp('@' + me.username + '\\b', 'i').test(t);
 
-  on('friend:decline', async ({ requestId }) => {
-    const { rows } = await pool.query(
-      `DELETE FROM friendships WHERE id=$1 AND addressee_id=$2 AND status='pending' RETURNING id`, [Number(requestId), me]);
-    if (!rows[0]) return { error: 'That request no longer exists.' };
-    io.to('u:' + me).emit('request:removed', { requestId: Number(requestId) });
-    return { ok: true };
-  });
-
-  on('message:send', async ({ to, content }) => {
-    to = Number(to);
-    content = typeof content === 'string' ? content.trim() : '';
-    if (!to || !content) return { error: 'Write a message first.' };
-    if (content.length > 2000) return { error: 'Messages can be up to 2000 characters.' };
-    if (!(await areFriends(me, to))) return { error: 'You can only message friends.' };
-    const { rows } = await pool.query(
-      `INSERT INTO messages (sender_id, receiver_id, content) VALUES ($1, $2, $3)
-       RETURNING id, sender_id, receiver_id, content, created_at`, [me, to, content]);
-    io.to('u:' + me).to('u:' + to).emit('message', rows[0]);
-    return { ok: true };
-  });
-
-  on('avatar:set', async ({ image }) => {
-    let buf = null;
-    if (image !== null) {
-      const m = typeof image === 'string' && /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(image);
-      buf = m && Buffer.from(m[1], 'base64');
-      if (!buf || buf.length > 150 * 1024 || buf[0] !== 0xff || buf[1] !== 0xd8) return { error: 'Please choose a valid image.' };
-    }
-    const { rows } = await pool.query(
-      'UPDATE users SET avatar=$1, avatar_v=$2 WHERE id=$3 RETURNING avatar_v AS av',
-      [buf, buf ? Math.floor(Date.now() / 1000) : 0, me]);
-    const ev = { userId: me, av: rows[0].av };
-    io.to('u:' + me).emit('avatar:updated', ev);
-    await broadcastToRelated(me, 'avatar:updated', ev);
-  });
-
-  on('server:create', async ({ name }) => {
-    name = typeof name === 'string' ? name.trim() : '';
-    if (!name || name.length > 30) return { error: 'Server names must be 1–30 characters.' };
-    const s = (await pool.query(
-      'INSERT INTO servers (name, owner_id, invite_code) VALUES ($1,$2,$3) RETURNING id, name, owner_id, invite_code',
-      [name, me, crypto.randomBytes(4).toString('hex')])).rows[0];
-    await pool.query('INSERT INTO server_members (server_id, user_id) VALUES ($1,$2)', [s.id, me]);
-    await pool.query("INSERT INTO channels (server_id, name) VALUES ($1, 'general')", [s.id]);
-    io.in('u:' + me).socketsJoin('s:' + s.id);
-    io.to('u:' + me).emit('server:added', { server: s });
-    return { ok: true, serverId: s.id };
-  });
-
-  on('server:join', async ({ code }) => {
-    code = typeof code === 'string' ? code.trim().toLowerCase() : '';
-    const s = code && (await pool.query('SELECT id, name, owner_id, invite_code FROM servers WHERE invite_code=$1', [code])).rows[0];
-    if (!s) return { error: 'That invite code is not valid.' };
-    if (await isMember(me, s.id)) return { error: 'You are already in that server.' };
-    await pool.query('INSERT INTO server_members (server_id, user_id) VALUES ($1,$2)', [s.id, me]);
-    io.in('u:' + me).socketsJoin('s:' + s.id);
-    io.to('u:' + me).emit('server:added', { server: s });
-    io.to('s:' + s.id).emit('member:joined', { serverId: s.id, member: { id: me, username: myName, online: true, av: await getAv(me) } });
-    return { ok: true, serverId: s.id };
-  });
-
-  on('channel:create', async ({ serverId, name }) => {
-    serverId = Number(serverId);
-    const s = (await pool.query('SELECT owner_id FROM servers WHERE id=$1', [serverId])).rows[0];
-    if (!s || s.owner_id !== me) return { error: 'Only the server owner can add channels.' };
-    name = String(name || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '').slice(0, 30);
-    if (!name) return { error: 'Use letters, numbers, dashes or underscores.' };
-    try {
-      const { rows } = await pool.query('INSERT INTO channels (server_id, name) VALUES ($1,$2) RETURNING id, name', [serverId, name]);
-      io.to('s:' + serverId).emit('channel:added', { serverId, channel: rows[0] });
-    } catch (e) {
-      if (e.code === '23505') return { error: 'A channel with that name already exists.' };
-      throw e;
-    }
-  });
-
-  on('channel:message', async ({ channelId, content, replyTo }) => {
-    channelId = Number(channelId);
-    content = typeof content === 'string' ? content.trim() : '';
-    if (!channelId || !content) return { error: 'Write a message first.' };
-    if (content.length > 2000) return { error: 'Messages can be up to 2000 characters.' };
-    const c = (await pool.query('SELECT server_id FROM channels WHERE id=$1', [channelId])).rows[0];
-    if (!c || !(await isMember(me, c.server_id))) return { error: 'You cannot post in this channel.' };
-    const rt = Number(replyTo) || null;
-    if (rt && !(await pool.query('SELECT 1 FROM channel_messages WHERE id=$1 AND channel_id=$2', [rt, channelId])).rowCount)
-      return { error: 'The message you are replying to no longer exists.' };
-    const { rows } = await pool.query(
-      'INSERT INTO channel_messages (channel_id, sender_id, content, reply_to) VALUES ($1,$2,$3,$4) RETURNING id', [channelId, me, content, rt]);
-    io.to('s:' + c.server_id).emit('channel:message', { ...(await getMessage(rows[0].id)), serverId: c.server_id });
-  });
-
-  const ctxFor = async (id) => {
-    const x = (await pool.query(
-      `SELECT m.sender_id, m.channel_id, c.server_id, s.owner_id FROM channel_messages m
-       JOIN channels c ON c.id=m.channel_id JOIN servers s ON s.id=c.server_id WHERE m.id=$1`, [Number(id) || 0])).rows[0];
-    return x && (await isMember(me, x.server_id)) ? x : null;
-  };
-  const pushUpdate = async (id, x) => io.to('s:' + x.server_id).emit('message:updated', { message: await getMessage(id), serverId: x.server_id });
-
-  on('message:edit', async ({ id, content }) => {
-    content = typeof content === 'string' ? content.trim() : '';
-    if (!content || content.length > 2000) return { error: 'Messages must be 1–2000 characters.' };
-    const x = await ctxFor(id);
-    if (!x || x.sender_id !== me) return { error: 'You can only edit your own messages.' };
-    await pool.query('UPDATE channel_messages SET content=$1, edited_at=NOW() WHERE id=$2 AND NOT is_system', [content, Number(id)]);
-    await pushUpdate(Number(id), x);
-  });
-
-  on('message:delete', async ({ id }) => {
-    const x = await ctxFor(id);
-    if (!x || (x.sender_id !== me && x.owner_id !== me)) return { error: 'You cannot delete this message.' };
-    await pool.query('DELETE FROM channel_messages WHERE id=$1', [Number(id)]);
-    io.to('s:' + x.server_id).emit('message:deleted', { id: Number(id), channelId: x.channel_id, serverId: x.server_id });
-  });
-
-  on('message:pin', async ({ id, pinned }) => {
-    const x = await ctxFor(id);
-    if (!x || x.owner_id !== me) return { error: 'Only the server owner can pin messages for now.' };
-    await pool.query('UPDATE channel_messages SET pinned=$1 WHERE id=$2 AND NOT is_system', [!!pinned, Number(id)]);
-    await pushUpdate(Number(id), x);
-    if (pinned) {
-      const r = await pool.query(
-        "INSERT INTO channel_messages (channel_id, sender_id, content, is_system) VALUES ($1,$2,'pinned a message',TRUE) RETURNING id", [x.channel_id, me]);
-      io.to('s:' + x.server_id).emit('channel:message', { ...(await getMessage(r.rows[0].id)), serverId: x.server_id });
-    }
-  });
-
-  on('reaction:toggle', async ({ id, emoji }) => {
-    if (typeof emoji !== 'string' || !emoji || emoji.length > 16) return { error: 'Invalid emoji.' };
-    const x = await ctxFor(id);
-    if (!x) return { error: 'Message not found.' };
-    const del = await pool.query('DELETE FROM message_reactions WHERE message_id=$1 AND user_id=$2 AND emoji=$3', [Number(id), me, emoji]);
-    if (!del.rowCount) await pool.query('INSERT INTO message_reactions (message_id, user_id, emoji) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING', [Number(id), me, emoji]);
-    await pushUpdate(Number(id), x);
-  });
-
-  on('channel:typing', async ({ channelId, isTyping }) => {
-    const sid = await chServer(Number(channelId));
-    if (sid && (await isMember(me, sid)))
-      socket.to('s:' + sid).emit('channel:typing', { channelId: Number(channelId), userId: me, username: myName, isTyping: !!isTyping });
-  });
-
-  on('server:leave', async ({ serverId }) => {
-    serverId = Number(serverId);
-    const s = (await pool.query('SELECT owner_id FROM servers WHERE id=$1', [serverId])).rows[0];
-    if (!s || !(await isMember(me, serverId))) return { error: 'You are not in that server.' };
-    if (s.owner_id === me) {
-      await pool.query('DELETE FROM servers WHERE id=$1', [serverId]);
-      io.to('s:' + serverId).emit('server:removed', { serverId, deleted: true });
-      io.in('s:' + serverId).socketsLeave('s:' + serverId);
+function inline(text, parent) {
+  const re = /`([^`\n]+)`|\*\*(.+?)\*\*|~~(.+?)~~|\|\|(.+?)\|\||\*(.+?)\*|(?<![A-Za-z0-9])_(.+?)_(?![A-Za-z0-9])|(https?:\/\/[^\s<]+)|(@[A-Za-z0-9_]+)|(#[a-z0-9_-]+)/g;
+  let i = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > i) parent.append(text.slice(i, m.index));
+    const wrap = (tag, cls, s) => { const n = el(tag, cls); inline(s, n); parent.append(n); return n; };
+    if (m[1] != null) parent.append(el('code', '', m[1]));
+    else if (m[2] != null) wrap('strong', '', m[2]);
+    else if (m[3] != null) wrap('s', '', m[3]);
+    else if (m[4] != null) { const sp = wrap('span', 'spoiler', m[4]); sp.onclick = () => sp.classList.add('shown'); }
+    else if (m[5] != null || m[6] != null) wrap('em', '', m[5] != null ? m[5] : m[6]);
+    else if (m[7]) { const a = el('a', '', m[7]); a.href = m[7]; a.target = '_blank'; a.rel = 'noopener noreferrer'; parent.append(a); }
+    else if (m[8]) {
+      const n = m[8].slice(1).toLowerCase();
+      const ok = curServer && (n === 'everyone' || n === 'here' || [...curServer.members.values()].some((u) => u.username.toLowerCase() === n));
+      parent.append(ok ? el('span', 'mention', m[8]) : m[8]);
     } else {
-      await pool.query('DELETE FROM server_members WHERE server_id=$1 AND user_id=$2', [serverId, me]);
-      io.to('u:' + me).emit('server:removed', { serverId });
-      io.in('u:' + me).socketsLeave('s:' + serverId);
-      io.to('s:' + serverId).emit('member:left', { serverId, userId: me });
+      const c = curServer && curServer.channels.find((x) => x.name === m[9].slice(1));
+      if (c) { const s = el('span', 'mention chanlink', m[9]); s.onclick = () => openChannel(c.id); parent.append(s); }
+      else parent.append(m[9]);
     }
-  });
+    i = re.lastIndex;
+  }
+  if (i < text.length) parent.append(text.slice(i));
+}
 
-  socket.on('typing', async (data) => {
-    try {
-      const to = Number(data && data.to);
-      if (to && (await areFriends(me, to))) io.to('u:' + to).emit('typing', { from: me, isTyping: !!data.isTyping });
-    } catch (e) { console.error('typing', e); }
+function renderContent(text, box) {
+  text.split(/```([\s\S]*?)```/).forEach((part, i) => {
+    if (i % 2) { const pre = el('pre'); pre.append(el('code', '', part.replace(/^\n/, ''))); box.append(pre); return; }
+    const lines = part.split('\n');
+    lines.forEach((ln, j) => {
+      const q = /^> ?(.*)$/.exec(ln);
+      if (q) { const bq = el('blockquote'); inline(q[1], bq); box.append(bq); }
+      else { inline(ln, box); if (j < lines.length - 1) box.append('\n'); }
+    });
   });
+}
 
-  socket.on('disconnect', () => {
-    sockets.delete(socket.id);
-    if (sockets.size === 0) {
-      online.delete(me);
-      broadcastPresence(me, false).catch(console.error);
+function msgRow(m, last) {
+  if (m.is_system) { const d = el('div', 'sys', m.username + ' ' + m.content); d.dataset.id = m.id; return d; }
+  const mine = m.sender_id === me.id, owner = curServer.owner_id === me.id, t = new Date(m.created_at);
+  const grouped = last && last.sender_id === m.sender_id && !m.reply_to && t - new Date(last.created_at) < 300000;
+  const row = el('div', 'msg' + (grouped ? ' grouped' : '') + (!mine && mentionsMe(m.content) ? ' mentioned' : ''));
+  row.dataset.id = m.id;
+  row.append(grouped ? el('span', 'gt', fmtTime(t)) : avatar(m.username, undefined, m.sender_id, m.av));
+  const body = el('div', 'mb');
+  if (m.reply_to) {
+    const r = el('button', 'rep', m.reply_username ? '↪ ' + m.reply_username + ': ' + m.reply_content : '↪ Original message was deleted');
+    if (m.reply_username) r.onclick = (e) => { e.stopPropagation(); jumpTo(m.reply_to); };
+    body.append(r);
+  }
+  if (!grouped) { const head = el('div', 'mh'); head.append(el('b', '', m.username), el('time', '', fmt(t))); body.append(head); }
+  const mc = el('div', 'mc'); renderContent(m.content, mc);
+  if (m.edited_at) mc.append(el('span', 'edited', ' (edited)'));
+  if (m.pinned) mc.append(el('span', 'edited', ' 📌 pinned'));
+  body.append(mc);
+  if (m.reactions && m.reactions.length) {
+    const rx = el('div', 'rx');
+    for (const r of m.reactions) {
+      const c = el('button', 'chip' + (r.ids.includes(me.id) ? ' mine' : ''), r.e + ' ' + r.ids.length);
+      c.title = r.names.join(', ') + ' reacted with ' + r.e;
+      c.onclick = (e) => { e.stopPropagation(); socket.emit('reaction:toggle', { id: m.id, emoji: r.e }, errToast); };
+      rx.append(c);
     }
+    body.append(rx);
+  }
+  row.append(body);
+  const acts = el('div', 'acts');
+  const add = (label, title, fn) => { const b = el('button', '', label); b.title = title; b.setAttribute('aria-label', title); b.onclick = (e) => { e.stopPropagation(); fn(b); }; acts.append(b); };
+  add('😀', 'Add reaction', (b) => openPicker(b, m));
+  add('↩', 'Reply', () => setCtx('reply', m));
+  if (mine) add('✎', 'Edit', () => setCtx('edit', m));
+  if (owner) add(m.pinned ? '📍' : '📌', m.pinned ? 'Unpin' : 'Pin', () => socket.emit('message:pin', { id: m.id, pinned: !m.pinned }, errToast));
+  if (mine || owner) add('🗑', 'Delete', () => { if (confirm('Delete this message?')) socket.emit('message:delete', { id: m.id }, errToast); });
+  row.append(acts);
+  row.addEventListener('click', (e) => { if (!e.target.closest('button,a,.spoiler,.chanlink')) row.classList.toggle('open'); });
+  return row;
+}
+
+function renderMsgs(stick) {
+  const box = $('#msgs'), fromBottom = box.scrollHeight - box.scrollTop;
+  box.textContent = '';
+  let last = null;
+  for (const m of chMsgs) { box.append(msgRow(m, last)); last = m.is_system ? null : m; }
+  box.scrollTop = stick ? box.scrollHeight : box.scrollHeight - fromBottom;
+  updateJump();
+}
+
+function jumpTo(id) {
+  const r = $('#msgs').querySelector('[data-id="' + id + '"]');
+  if (!r) return toast('That message is not loaded. Scroll up to load older messages.');
+  r.scrollIntoView({ block: 'center' }); r.classList.add('flash'); setTimeout(() => r.classList.remove('flash'), 1500);
+}
+
+function openPicker(btn, m) {
+  document.querySelectorAll('.picker').forEach((p) => p.remove());
+  const p = el('div', 'picker'), r = btn.getBoundingClientRect();
+  p.style.top = Math.max(8, r.top - 44) + 'px';
+  p.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 320)) + 'px';
+  for (const e of EMOJIS) { const b = el('button', '', e); b.onclick = () => { p.remove(); socket.emit('reaction:toggle', { id: m.id, emoji: e }, errToast); }; p.append(b); }
+  document.body.append(p);
+  setTimeout(() => document.addEventListener('click', () => p.remove(), { once: true }));
+}
+
+function setCtx(type, m) {
+  ctx = { type, m };
+  const bar = $('#replyBar'); bar.textContent = '';
+  const x = el('button', 'ghost sm', '✕'); x.setAttribute('aria-label', 'Cancel');
+  x.onclick = () => { if (type === 'edit') $('#text').value = ''; clearCtx(); };
+  bar.append(el('span', '', type === 'edit' ? 'Editing message' : 'Replying to ' + m.username + ': ' + m.content), x);
+  bar.hidden = false;
+  if (type === 'edit') $('#text').value = m.content;
+  $('#text').focus();
+}
+function clearCtx() { ctx = null; $('#replyBar').hidden = true; }
+
+function updateJump() { const b = $('#msgs'); $('#jump').hidden = b.scrollHeight - b.scrollTop - b.clientHeight < 300; }
+$('#jump').onclick = () => { const b = $('#msgs'); b.scrollTo({ top: b.scrollHeight, behavior: 'smooth' }); };
+$('#msgs').addEventListener('scroll', () => {
+  updateJump();
+  if (activeChannel && chMore && !loadingOlder && $('#msgs').scrollTop < 80) loadOlder();
+});
+async function loadOlder() {
+  loadingOlder = true; const id = activeChannel;
+  try {
+    const d = await api('/api/channels/' + id + '/messages?before=' + chMsgs[0].id);
+    if (id !== activeChannel) return;
+    chMsgs = d.messages.concat(chMsgs); chMore = d.more; renderMsgs(false);
+  } catch (err) { toast(err.message); } finally { loadingOlder = false; }
+}
+
+$('#pinsBtn').onclick = async () => {
+  try {
+    const { messages } = await api('/api/channels/' + activeChannel + '/pins');
+    const list = $('#pinList'); list.textContent = '';
+    if (!messages.length) list.append(el('p', '', 'No pinned messages yet.'));
+    for (const m of messages) {
+      const d = el('div', 'pin'), h = el('div', 'mh'), c = el('div', 'mc');
+      h.append(el('b', '', m.username), el('time', '', fmt(new Date(m.created_at))));
+      renderContent(m.content, c); d.append(h, c); list.append(d);
+    }
+    $('#pinDlg').showModal();
+  } catch (err) { toast(err.message); }
+};
+$('#pinClose').onclick = () => $('#pinDlg').close();
+
+// ---------- mention / channel autocomplete ----------
+let acItems = [], acIdx = 0;
+function acClose() { $('#ac').hidden = true; acItems = []; }
+function renderAc() {
+  const box = $('#ac'); box.textContent = '';
+  if (!acItems.length) return acClose();
+  acItems.forEach((it, i) => {
+    const b = el('button', i === acIdx ? 'on' : '', it.sym + it.name); b.type = 'button';
+    b.onmousedown = (e) => { e.preventDefault(); acPick(i); };
+    box.append(b);
   });
+  box.hidden = false;
+}
+function acUpdate() {
+  const inp = $('#text'), pre = inp.value.slice(0, inp.selectionStart);
+  const m = activeChannel && curServer && /(^|\s)([@#])([\w-]*)$/.exec(pre);
+  if (!m) return acClose();
+  const q = m[3].toLowerCase();
+  const opts = m[2] === '@' ? ['everyone', 'here', ...[...curServer.members.values()].map((u) => u.username)] : curServer.channels.map((c) => c.name);
+  acItems = opts.filter((n) => n.toLowerCase().startsWith(q)).slice(0, 6).map((n) => ({ sym: m[2], name: n, start: pre.length - m[3].length - 1 }));
+  acIdx = 0; renderAc();
+}
+function acPick(i) {
+  const it = acItems[i], inp = $('#text'), caret = inp.selectionStart;
+  inp.value = inp.value.slice(0, it.start) + it.sym + it.name + ' ' + inp.value.slice(caret);
+  const pos = it.start + it.name.length + 2; inp.setSelectionRange(pos, pos);
+  acClose(); inp.focus();
+}
+$('#text').addEventListener('input', acUpdate);
+$('#text').addEventListener('blur', acClose);
+$('#text').addEventListener('keydown', (e) => {
+  if ($('#ac').hidden) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); acIdx = (acIdx + (e.key === 'ArrowDown' ? 1 : acItems.length - 1)) % acItems.length; renderAc(); }
+  else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); acPick(acIdx); }
+  else if (e.key === 'Escape') acClose();
 });
 
-// ---------- Start ----------
-initDb()
-  .then(() => server.listen(PORT, () => console.log(`Server running on port ${PORT}`)))
-  .catch((e) => { console.error('Failed to start:', e); process.exit(1); });
+start();
+</script>
+</body>
+</html>
